@@ -43,11 +43,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- إعداد الذكاء الاصطناعي (Gemini 2.5 Pro) ---
+# --- إعداد الذكاء الاصطناعي (Gemini 1.5 Pro) ---
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
     else:
         model = None
         logger.warning("متغير البيئة GEMINI_API_KEY غير موجود.")
@@ -200,6 +200,7 @@ async def handle_document_message(update: Update, context: CallbackContext):
     set_user_state(user_id, 'awaiting_file_instruction', data={'file_id': doc.file_id, 'file_name': doc.file_name})
     await update.message.reply_text(f"لقد استلمت الملف ({doc.file_name})... ماذا تريدني أن أفعل به؟")
 
+# --- دالة المحادثة الأساسية (تمت إعادة كتابتها لتكون أكثر استقراراً) ---
 async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
@@ -210,51 +211,53 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     
-    memory = get_user_data(user_id).get('memory', {})
-    memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n" + "\n".join(f"- {k}: {v}" for k, v in memory.items()) if memory else "لا توجد ذكريات مشتركة بيننا بعد."
-    
-    system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
-    history = get_user_data(user_id).get('conversation_history', [])
-    
-    new_message_parts = []
-    if text_input: new_message_parts.append(text_input)
-    if audio_input:
-        new_message_parts.append(audio_input)
-        if not text_input: new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
-            
-    history.append({'role': 'user', 'parts': new_message_parts})
-
     try:
-        full_conversation = [{'role': 'user', 'parts': [system_instruction]}]
-        full_conversation.append({'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]})
-        full_conversation.extend(history)
-
-        generation_config = genai.types.GenerationConfig(temperature=0.85)
-        response = model.generate_content(full_conversation, generation_config=generation_config)
+        # إعداد الذاكرة والتعليمات
+        memory = get_user_data(user_id).get('memory', {})
+        memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n" + "\n".join(f"- {k}: {v}" for k, v in memory.items()) if memory else "لا توجد ذكريات مشتركة بيننا بعد."
+        system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
+        
+        # إعداد سجل المحادثة
+        history = get_user_data(user_id).get('conversation_history', [])
+        
+        # بدء جلسة محادثة جديدة مع التعليمات والسجل
+        chat = model.start_chat(
+            history=[
+                {'role': 'user', 'parts': [system_instruction]},
+                {'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]},
+                *history
+            ]
+        )
+        
+        # بناء الرسالة الجديدة
+        new_message_parts = []
+        if text_input: new_message_parts.append(text_input)
+        if audio_input:
+            new_message_parts.append(audio_input)
+            if not text_input: new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
+        
+        # إرسال الرسالة والحصول على الرد
+        response = await chat.send_message_async(new_message_parts)
         response_text = response.text
         
-        history.append({'role': 'model', 'parts': [response_text]})
-        user_data[str(user_id)]['conversation_history'] = history[-12:]
+        # تحديث السجل في قاعدة البيانات
+        user_data[str(user_id)]['conversation_history'] = chat.history[-12:] # حفظ آخر 12 تفاعل
         
         await update.message.reply_text(response_text)
     
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        history.pop()
-        user_data[str(user_id)]['conversation_history'] = history
-        await update.message.reply_text(f"...آسفة {user_name}-كن، عقلي مشوش قليلاً الآن.")
+        logger.error(f"Gemini API error in respond_to_conversation: {e}")
+        await update.message.reply_text(f"...آسفة {user_name}-كن، عقلي مشوش قليلاً الآن. لنجرب مرة أخرى بعد قليل.")
     finally:
         save_user_data(user_data)
 
-# --- الدوال التي تم إصلاحها ---
+# --- دوال الميزات الخاصة ---
 async def perform_search(update: Update, context: CallbackContext, query: str):
-    user_id = str(update.effective_user.id)
-    set_user_state(user_id, None)
+    set_user_state(update.effective_user.id, None)
     await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{query}' وقدمي لي ملخصاً بأسلوبك.")
 
 async def perform_write(update: Update, context: CallbackContext, prompt: str):
-    user_id = str(update.effective_user.id)
-    set_user_state(user_id, None)
+    set_user_state(update.effective_user.id, None)
     await respond_to_conversation(update, context, text_input=f"اكتبي لي نصاً إبداعياً عن '{prompt}' بأسلوبك.")
 
 async def handle_file_instruction(update: Update, context: CallbackContext, instruction: str):
@@ -279,7 +282,7 @@ async def handle_file_instruction(update: Update, context: CallbackContext, inst
 
         prompt = f"أنت مساعد برمجي خبير. صديقي أرسل لي هذا الملف المسمى '{file_name}' وهذا هو محتواه:\n\n```\n{file_content_text}\n```\n\nوقد طلب مني تنفيذ الأمر التالي: '{instruction}'.\n\nقم بتطبيق التعديل المطلوب على الكود وأرجع لي محتوى الملف كاملاً بعد التعديل. لا تضف أي ملاحظات أو شروحات خارج الكود. فقط الكود المعدل."
         
-        response = model.generate_content(prompt)
+        response = await model.generate_content_async(prompt)
         modified_content = response.text.strip().replace("```", "")
         
         modified_file_bytes = io.BytesIO(modified_content.encode('utf-8'))
@@ -312,6 +315,7 @@ async def button_handler(update: Update, context: CallbackContext):
         await query.edit_message_text("للمساعدة في ملف، فقط أرسل الملف مباشرة إلى المحادثة. 🗂️")
     # ... (إضافة معالجات لبقية الأزرار)
 
+
 # --- تشغيل البوت ---
 def main():
     if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
@@ -327,7 +331,7 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (Definitive Edition) is running!")
+    logger.info("🌸 Mahiro (Definitive Stable Edition) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
