@@ -43,7 +43,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- إعداد الذكاء الاصطناعي (Gemini 2.5 Pro) ---
+# --- إعداد الذكاء الاصطناعي (Gemini 1.5 Pro) ---
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
@@ -122,7 +122,7 @@ def get_our_world_keyboard():
         [InlineKeyboardButton("🎬 قائمة المشاهدة", callback_data="watchlist")],
         [InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main")]
     ])
-# ... (يمكن إضافة المزيد من لوحات المفاتيح للميزات الجديدة)
+
 def get_advanced_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 بحث في الإنترنت", callback_data="prompt_search")],
@@ -154,18 +154,15 @@ async def handle_text_message(update: Update, context: CallbackContext):
         await update.message.reply_text(f"حسناً، {name}-كن. ...سأناديك هكذا من الآن.", reply_markup=get_main_keyboard())
         return
 
-    # توجيه الطلبات الخاصة
     action_map = {
         'awaiting_search_query': perform_search,
         'awaiting_write_prompt': perform_write,
         'awaiting_file_instruction': handle_file_instruction,
-        # ... (بقية الحالات)
     }
     if user_state in action_map:
         await action_map[user_state](update, context, text)
         return
 
-    # إذا لم يكن هناك حالة خاصة، تكون محادثة عادية
     await respond_to_conversation(update, context, text_input=text)
 
 async def handle_voice_message(update: Update, context: CallbackContext):
@@ -180,17 +177,45 @@ async def handle_voice_message(update: Update, context: CallbackContext):
         logger.error(f"Voice processing error: {e}")
         await update.message.reply_text("😥 آسفة، لم أستطع معالجة رسالتك الصوتية الآن.")
 
+# --- الدالة المفقودة التي تم إضافتها ---
+async def handle_photo_message(update: Update, context: CallbackContext):
+    user_id = str(update.effective_user.id)
+    user_name = get_user_data(user_id).get('name', 'أماني-كن')
+    
+    if not update.message.photo:
+        return
+
+    try:
+        photo_file_id = update.message.photo[-1].file_id
+        album = get_user_data(user_id).get('photo_album', [])
+        
+        album.append({
+            "file_id": photo_file_id,
+            "caption": update.message.caption or f"صورة من {user_name}",
+            "date": datetime.now().isoformat()
+        })
+        
+        user_data[str(user_id)]['photo_album'] = album
+        save_user_data(user_data)
+        
+        await update.message.reply_text("ص-صورة جميلة... لقد احتفظت بها في ألبومنا. (⁄ ⁄•⁄ω⁄•⁄ ⁄)")
+
+    except Exception as e:
+        logger.error(f"Photo handling error: {e}")
+        await update.message.reply_text("...آسفة، حدث خطأ ما أثناء حفظ الصورة.")
+
+
 async def handle_document_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     doc = update.message.document
-    if doc.file_size > 5 * 1024 * 1024: # حد 5 ميجابايت
-        await update.message.reply_text("...هذا الملف كبير جداً. لا أستطيع التعامل معه.")
+    if doc.file_size > 5 * 1024 * 1024:
+        await update.message.reply_text("...هذا الملف كبير جداً.")
         return
         
     set_user_state(user_id, 'awaiting_file_instruction', data={'file_id': doc.file_id, 'file_name': doc.file_name})
-    await update.message.reply_text(f"لقد استلمت الملف ({doc.file_name})... ماذا تريدني أن أفعل به؟ هل أقرأه لك أم أساعدك في تعديله؟")
+    await update.message.reply_text(f"لقد استلمت الملف ({doc.file_name})... ماذا تريدني أن أفعل به؟")
 
-async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None, file_input=None):
+async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
 
@@ -211,8 +236,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
     if audio_input:
         new_message_parts.append(audio_input)
         if not text_input: new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
-    if file_input:
-        new_message_parts.append(file_input)
             
     history.append({'role': 'user', 'parts': new_message_parts})
 
@@ -238,8 +261,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
     finally:
         save_user_data(user_data)
 
-# --- المنطق الداخلي للميزات ---
-
 async def handle_file_instruction(update: Update, context: CallbackContext, instruction: str):
     user_id = str(update.effective_user.id)
     state_info = get_user_data(user_id).get('next_action', {})
@@ -261,13 +282,11 @@ async def handle_file_instruction(update: Update, context: CallbackContext, inst
         file_content_bytes = await file_obj.download_as_bytearray()
         file_content_text = file_content_bytes.decode('utf-8')
 
-        # استخدام Gemini لتعديل الملف
         prompt = f"أنت مساعد برمجي خبير. صديقي أرسل لي هذا الملف المسمى '{file_name}' وهذا هو محتواه:\n\n```\n{file_content_text}\n```\n\nوقد طلب مني تنفيذ الأمر التالي: '{instruction}'.\n\nقم بتطبيق التعديل المطلوب على الكود وأرجع لي محتوى الملف كاملاً بعد التعديل. لا تضف أي ملاحظات أو شروحات خارج الكود. فقط الكود المعدل."
         
         response = model.generate_content(prompt)
-        modified_content = response.text.strip().replace("```", "") # تنظيف الرد
+        modified_content = response.text.strip().replace("```", "")
         
-        # إرسال الملف المعدل
         modified_file_bytes = io.BytesIO(modified_content.encode('utf-8'))
         await context.bot.send_document(
             chat_id=update.effective_chat.id,
@@ -278,14 +297,10 @@ async def handle_file_instruction(update: Update, context: CallbackContext, inst
 
     except Exception as e:
         logger.error(f"File modification error: {e}")
-        await message.edit_text("...آسفة، حدث خطأ أثناء تعديل الملف. ربما الملف ليس نصياً؟")
+        await message.edit_text("...آسفة، حدث خطأ أثناء تعديل الملف.")
     finally:
         set_user_state(user_id, None)
 
-
-# ... (بقية دوال الميزات مثل perform_search, perform_write)
-
-# --- معالج الأزرار ---
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -299,11 +314,10 @@ async def button_handler(update: Update, context: CallbackContext):
     elif data == "advanced_menu":
         await query.edit_message_text("هذه هي قدراتي الخاصة لمساعدتك...", reply_markup=get_advanced_keyboard())
     elif data == "file_helper_info":
-        await query.edit_message_text("للمساعدة في ملف، فقط أرسل الملف مباشرة إلى المحادثة. سأعرف ماذا أفعل... 🗂️")
+        await query.edit_message_text("للمساعدة في ملف، فقط أرسل الملف مباشرة إلى المحادثة. 🗂️")
     # ... (إضافة معالجات لبقية الأزرار)
 
 
-# --- تشغيل البوت ---
 def main():
     if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
         logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
@@ -314,11 +328,12 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document_message)) # معالج الملفات الجديد
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
+    # --- السطر الذي تم إصلاحه ---
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (Final Edition) is running!")
+    logger.info("🌸 Mahiro (Final, Corrected Edition) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
