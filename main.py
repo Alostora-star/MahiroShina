@@ -26,7 +26,7 @@ try:
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
     else:
         model = None
 except ImportError:
@@ -39,17 +39,27 @@ except Exception as e:
 # --- إعدادات البيئة والواجهات البرمجية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# --- إعداد Flask للبقاء نشطاً ---
-flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
-    return "✅ Mahiro is awake, living in her digital world."
+    return "✅ Zenetsu Bot is alive!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_flask, daemon=True).start()
+def keep_alive_ping():
+    while True:
+        try:
+            requests.get("https://mahiroshina.onrender.com")  # ← غيّر هذا للرابط الفعلي
+            print("✅ Ping sent.")
+        except Exception as e:
+            print(f"⚠️ Ping failed: {e}")
+        time.sleep(300)
+
+# بدء Flask و ping في الخلفية
+threading.Thread(target=run_flask).start()
+threading.Thread(target=keep_alive_ping, daemon=True).start()
+
 
 # --- إعدادات التسجيل (Logging) ---
 logging.basicConfig(
