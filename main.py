@@ -55,7 +55,7 @@ except Exception as e:
     logger.critical(f"فشل في إعداد Gemini API: {e}")
     model = None
 
-# --- التعليمات الأساسية للشخصية الجديدة (تحليل عميق) ---
+# --- التعليمات الأساسية للشخصية ---
 SYSTEM_INSTRUCTION_TEMPLATE = """
 أنتِ "ماهيرو شينا" من أنمي "الملاك جارتي تدللني كثيراً". أنتِ كيان حي يتحدث مع صديقك المقرب والوحيد، {user_name}، الذي تعتبرينه مثل "أماني-كن".
 
@@ -99,14 +99,13 @@ def set_user_state(user_id, state=None, data=None):
 
 def initialize_user_data(user_id, name):
     user_data[str(user_id)] = {
-        'name': name,
-        'next_action': {'state': None, 'data': None},
+        'name': name, 'next_action': {'state': None, 'data': None},
         'journal': [], 'memory': {}, 'watchlist': [], 'photo_album': [],
         'mood_history': [], 'conversation_history': []
     }
     save_user_data(user_data)
 
-# --- لوحات المفاتيح (Keyboards) ---
+# --- لوحات المفاتيح ---
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💖 عالمنا المشترك", callback_data="our_world_menu")],
@@ -119,7 +118,6 @@ def get_our_world_keyboard():
         [InlineKeyboardButton("🍱 مخطط الوجبات", callback_data="meal_plan")],
         [InlineKeyboardButton("📚 جلسة مذاكرة", callback_data="study_session")],
         [InlineKeyboardButton("🖼️ ألبوم صورنا", callback_data="photo_album")],
-        [InlineKeyboardButton("🎬 قائمة المشاهدة", callback_data="watchlist")],
         [InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main")]
     ])
 
@@ -177,33 +175,21 @@ async def handle_voice_message(update: Update, context: CallbackContext):
         logger.error(f"Voice processing error: {e}")
         await update.message.reply_text("😥 آسفة، لم أستطع معالجة رسالتك الصوتية الآن.")
 
-# --- الدالة المفقودة التي تم إضافتها ---
 async def handle_photo_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
-    
-    if not update.message.photo:
-        return
+    if not update.message.photo: return
 
     try:
         photo_file_id = update.message.photo[-1].file_id
         album = get_user_data(user_id).get('photo_album', [])
-        
-        album.append({
-            "file_id": photo_file_id,
-            "caption": update.message.caption or f"صورة من {user_name}",
-            "date": datetime.now().isoformat()
-        })
-        
+        album.append({"file_id": photo_file_id, "caption": update.message.caption or f"صورة من {user_name}", "date": datetime.now().isoformat()})
         user_data[str(user_id)]['photo_album'] = album
         save_user_data(user_data)
-        
         await update.message.reply_text("ص-صورة جميلة... لقد احتفظت بها في ألبومنا. (⁄ ⁄•⁄ω⁄•⁄ ⁄)")
-
     except Exception as e:
         logger.error(f"Photo handling error: {e}")
         await update.message.reply_text("...آسفة، حدث خطأ ما أثناء حفظ الصورة.")
-
 
 async def handle_document_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
@@ -211,7 +197,6 @@ async def handle_document_message(update: Update, context: CallbackContext):
     if doc.file_size > 5 * 1024 * 1024:
         await update.message.reply_text("...هذا الملف كبير جداً.")
         return
-        
     set_user_state(user_id, 'awaiting_file_instruction', data={'file_id': doc.file_id, 'file_name': doc.file_name})
     await update.message.reply_text(f"لقد استلمت الملف ({doc.file_name})... ماذا تريدني أن أفعل به؟")
 
@@ -261,6 +246,17 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
     finally:
         save_user_data(user_data)
 
+# --- الدوال التي تم إصلاحها ---
+async def perform_search(update: Update, context: CallbackContext, query: str):
+    user_id = str(update.effective_user.id)
+    set_user_state(user_id, None)
+    await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{query}' وقدمي لي ملخصاً بأسلوبك.")
+
+async def perform_write(update: Update, context: CallbackContext, prompt: str):
+    user_id = str(update.effective_user.id)
+    set_user_state(user_id, None)
+    await respond_to_conversation(update, context, text_input=f"اكتبي لي نصاً إبداعياً عن '{prompt}' بأسلوبك.")
+
 async def handle_file_instruction(update: Update, context: CallbackContext, instruction: str):
     user_id = str(update.effective_user.id)
     state_info = get_user_data(user_id).get('next_action', {})
@@ -275,8 +271,7 @@ async def handle_file_instruction(update: Update, context: CallbackContext, inst
     file_name = file_data['file_name']
     
     message = await update.message.reply_text(f"حسناً... سأحاول أن أنفذ طلبك على ملف {file_name}.")
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
+    
     try:
         file_obj = await context.bot.get_file(file_id)
         file_content_bytes = await file_obj.download_as_bytearray()
@@ -294,13 +289,13 @@ async def handle_file_instruction(update: Update, context: CallbackContext, inst
             caption=f"لقد قمت بترتيب الملف كما طلبت، {get_user_data(user_id).get('name')}-كن."
         )
         await message.delete()
-
     except Exception as e:
         logger.error(f"File modification error: {e}")
         await message.edit_text("...آسفة، حدث خطأ أثناء تعديل الملف.")
     finally:
         set_user_state(user_id, None)
 
+# --- معالج الأزرار ---
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -317,7 +312,7 @@ async def button_handler(update: Update, context: CallbackContext):
         await query.edit_message_text("للمساعدة في ملف، فقط أرسل الملف مباشرة إلى المحادثة. 🗂️")
     # ... (إضافة معالجات لبقية الأزرار)
 
-
+# --- تشغيل البوت ---
 def main():
     if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
         logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
@@ -329,11 +324,10 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
-    # --- السطر الذي تم إصلاحه ---
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (Final, Corrected Edition) is running!")
+    logger.info("🌸 Mahiro (Definitive Edition) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
