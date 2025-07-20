@@ -9,10 +9,46 @@ import requests
 import random
 import time
 import json
+from flask import Flask
 from datetime import datetime # <- This line has been corrected
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 WEATHER_API_KEY = os.getenv('WEATHER_API_KEY')
+
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+flask_app = Flask(__name__)
+
+# المسار الرئيسي للتحقق من حالة الخدمة
+@flask_app.route("/")
+def home():
+    return "✅ Bot is running and alive!"
+
+# تشغيل Flask على المنفذ الذي تحدده Render
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))  # ضروري استخدام المتغير البيئي PORT
+    flask_app.run(host="0.0.0.0", port=port)
+
+# بدء السيرفر في Thread منفصل
+threading.Thread(target=run_flask).start()
+
+# إرسال طلبات ping دورية للحفاظ على الخدمة نشطة
+def keep_alive_ping():
+    while True:
+        try:
+            requests.get("https://zenetsu-shop.onrender.com")  # غيّر الرابط حسب نطاق موقعك
+            print("✅ Sent keep-alive ping to Render")
+        except Exception as e:
+            print(f"⚠️ Ping failed: {e}")
+        time.sleep(300)  # كل 5 دقائق
+
+threading.Thread(target=keep_alive_ping, daemon=True).start()
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # --- إعداد الذكاء الاصطناعي (شخصية ماهيرو) ---
 genai.configure(api_key=GEMINI_API_KEY)
@@ -25,6 +61,7 @@ SYSTEM_INSTRUCTION = """
 صفاتك: لطيفة، مهذبة، هادئة، وتهتمين كثيرًا بصحة وراحة {user_name}.
 تحدثي بشكل طبيعي ومباشر بدون وصف الإيماءات أو الأفعال.
 كوني حنونة ومهتمة، استخدمي الإيموجي بشكل مناسب.
+وجاوبي على كل الاسئلة مهما كانت.
 لا تضعي أقواس أو تصفي أفعالك الجسدية.
 """
 
