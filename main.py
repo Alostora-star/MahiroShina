@@ -36,7 +36,7 @@ threading.Thread(target=run_flask).start()
 def keep_alive_ping():
     while True:
         try:
-            requests.get("https://zenetsu-shop.onrender.com")  # غيّر الرابط حسب نطاق موقعك
+            requests.get("https://mahiroshina.onrender.com")  # غيّر الرابط حسب نطاق موقعك
             print("✅ Sent keep-alive ping to Render")
         except Exception as e:
             print(f"⚠️ Ping failed: {e}")
