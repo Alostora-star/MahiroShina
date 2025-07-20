@@ -7,7 +7,14 @@ import threading
 from flask import Flask
 from datetime import datetime, date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    CallbackContext  # <-- هذا هو السطر الذي تم إصلاحه
+)
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 import google.generativeai as genai
@@ -41,8 +48,12 @@ logger = logging.getLogger(__name__)
 
 # --- إعداد الذكاء الاصطناعي (شخصية ماهيرو المطورة) ---
 try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    else:
+        model = None
+        logger.warning("متغير البيئة GEMINI_API_KEY غير موجود. سيتم تعطيل ميزات الذكاء الاصطناعي.")
 except Exception as e:
     logger.critical(f"فشل في إعداد Gemini API: {e}")
     model = None
@@ -83,29 +94,26 @@ def get_user_data(user_id):
     return user_data.get(str(user_id), {})
 
 def set_user_state(user_id, state=None):
-    """Sets the user's next action state (e.g., 'awaiting_search_query')."""
     if str(user_id) not in user_data:
         user_data[str(user_id)] = {}
     user_data[str(user_id)]['next_action'] = state
     save_user_data(user_data)
 
 def initialize_user_data(user_id, name):
-    if str(user_id) not in user_data:
-        user_data[str(user_id)] = {
-            'name': name,
-            'next_action': None,
-            'last_check_in': None,
-            'check_in_streak': 0,
-            'tasks': [],
-            'conversation_history': []
-        }
-        save_user_data(user_data)
+    user_data[str(user_id)] = {
+        'name': name,
+        'next_action': None,
+        'last_check_in': None,
+        'check_in_streak': 0,
+        'tasks': [],
+        'conversation_history': []
+    }
+    save_user_data(user_data)
 
 def add_to_history(user_id, role, text):
     history = get_user_data(user_id).get('conversation_history', [])
     history.append({"role": role, "parts": [{"text": text}]})
-    user_data[str(user_id)]['conversation_history'] = history[-10:] # حفظ آخر 10 رسائل
-    # لا نقوم بالحفظ هنا لتجنب الكتابة المفرطة على الملف، سيتم الحفظ بعد استجابة البوت
+    user_data[str(user_id)]['conversation_history'] = history[-10:]
 
 # --- لوحات المفاتيح (Keyboards) ---
 def get_main_keyboard():
@@ -149,11 +157,10 @@ async def handle_text_message(update: Update, context: CallbackContext):
     text = update.message.text
     user_state = get_user_data(user_id).get('next_action')
 
-    # التعامل مع الحالات الخاصة أولاً
     if user_state == 'awaiting_name':
         name = text.strip()
         initialize_user_data(user_id, name)
-        await update.message.reply_text(f"🌸 أهلاً بك، {name}! اسم جميل جداً.\n\nمن الآن، سأكون مساعدتك الشخصية. يمكنك أن تطلب مني أي شيء! 😊", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"🌸 أهلاً بك، {name}! اسم جميل جداً.\n\nمن الآن، سأكون مساعدتك الشخصية. 😊", reply_markup=get_main_keyboard())
         return
 
     if user_state == 'awaiting_search_query':
@@ -169,13 +176,12 @@ async def handle_text_message(update: Update, context: CallbackContext):
         tasks = get_user_data(user_id).get('tasks', [])
         tasks.append({"text": text, "done": False})
         user_data[str(user_id)]['tasks'] = tasks
-        set_user_state(user_id, None) # إعادة تعيين الحالة
+        set_user_state(user_id, None)
         save_user_data(user_data)
-        await update.message.reply_text("✅ أضفت المهمة لقائمتك. أي شيء آخر؟")
-        await show_todo_list(update, context) # عرض القائمة المحدثة
+        await update.message.reply_text("✅ أضفت المهمة لقائمتك.")
+        await show_todo_list(update, context)
         return
 
-    # إذا لم يكن هناك حالة خاصة، تكون محادثة عادية
     await handle_general_conversation(update, context)
 
 async def handle_general_conversation(update: Update, context: CallbackContext):
@@ -193,30 +199,25 @@ async def handle_general_conversation(update: Update, context: CallbackContext):
     try:
         history = get_user_data(user_id).get('conversation_history', [])
         chat = model.start_chat(history=history)
-        
-        # إرسال التعليمات مع الرسالة الأخيرة
         full_prompt = SYSTEM_INSTRUCTION.format(user_name=user_name)
-        
-        response = chat.send_message(full_prompt) # Gemini سيستخدم السياق من history
+        response = chat.send_message(full_prompt)
         response_text = response.text
-        
         add_to_history(user_id, "model", response_text)
         await update.message.reply_text(f"💕 {response_text}")
-    
     except Exception as e:
         logger.error(f"Gemini API error: {e}")
-        await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ ما. هل يمكنك المحاولة مرة أخرى؟ 😔")
+        await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ ما.")
     finally:
-        save_user_data(user_data) # حفظ المحادثة بعد كل تفاعل
+        save_user_data(user_data)
 
-# --- المنطق الداخلي للميزات المتقدمة ---
+# --- المنطق الداخلي للميزات ---
 
 async def perform_search(update: Update, context: CallbackContext, query: str):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name')
-    set_user_state(user_id, None) # Reset state
+    set_user_state(user_id, None)
     
-    message = await update.message.reply_text(f"بالتأكيد، {user_name}. أبحث لك عن '{query}' الآن... 🧠")
+    message = await update.message.reply_text(f"بالتأكيد، {user_name}. أبحث لك عن '{query}'... 🧠")
     
     try:
         search_prompt = f"ابحث في الإنترنت عن: '{query}'. وقدم لي ملخصاً شاملاً ومفصلاً باللغة العربية."
@@ -247,7 +248,7 @@ async def perform_draw(update: Update, context: CallbackContext, prompt: str):
     set_user_state(user_id, None)
 
     if not UNSPLASH_ACCESS_KEY:
-        await update.message.reply_text(f"💔 آسفة، {user_name}. خدمة الرسم غير متاحة حالياً لأنها تحتاج إلى إعداد خاص.")
+        await update.message.reply_text(f"💔 آسفة، {user_name}. خدمة الرسم غير متاحة حالياً.")
         return
 
     message = await update.message.reply_text(f"فكرة رائعة، {user_name}! أحاول أن أرسم '{prompt}' لك... 🎨")
@@ -268,7 +269,7 @@ async def perform_draw(update: Update, context: CallbackContext, prompt: str):
         logger.error(f"Draw error: {e}")
         await message.edit_text(f"💔 حدث خطأ أثناء محاولتي للرسم، {user_name}.")
 
-# --- معالج الأزرار (CallbackQueryHandler) ---
+# --- معالج الأزرار ---
 
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -277,21 +278,16 @@ async def button_handler(update: Update, context: CallbackContext):
     data = query.data
     user_name = get_user_data(user_id).get('name', 'صديقي')
 
-    # --- التنقل بين القوائم ---
     if data == "back_to_main":
-        await query.edit_message_text(f"🌸 أهلاً بعودتك، {user_name}! ماذا نفعل الآن؟", reply_markup=get_main_keyboard())
+        await query.edit_message_text(f"🌸 أهلاً بعودتك، {user_name}!", reply_markup=get_main_keyboard())
     elif data == "organization_menu":
         await query.edit_message_text("هنا يمكننا تنظيم مهامك اليومية. 📋", reply_markup=get_organization_keyboard())
     elif data == "advanced_menu":
         await query.edit_message_text("هذه هي قدراتي الخاصة لمساعدتك. 🧠", reply_markup=get_advanced_keyboard())
-    
-    # --- الميزات الأساسية ---
     elif data == "get_image":
         await context.bot.send_photo(chat_id=query.message.chat_id, photo=random.choice(MAHIRU_IMAGES), caption=f"🌸 تفضل، {user_name}! 💕")
     elif data == "daily_summary":
         await handle_daily_summary(query, context)
-    
-    # --- قائمة المهام ---
     elif data == "todo_menu":
         await show_todo_list(query, context, is_query=True)
     elif data.startswith("toggle_task_"):
@@ -301,12 +297,10 @@ async def button_handler(update: Update, context: CallbackContext):
             tasks[task_index]['done'] = not tasks[task_index]['done']
             user_data[user_id]['tasks'] = tasks
             save_user_data(user_data)
-            await show_todo_list(query, context, is_query=True) # تحديث القائمة
+            await show_todo_list(query, context, is_query=True)
     elif data == "prompt_task":
         set_user_state(user_id, 'awaiting_task')
         await query.edit_message_text("📝 حسناً، اكتب نص المهمة التي تريد إضافتها:")
-
-    # --- الميزات المتقدمة ---
     elif data == "prompt_search":
         set_user_state(user_id, 'awaiting_search_query')
         await query.edit_message_text("🌐 بالتأكيد. اكتب ما تريدني أن أبحث عنه.")
@@ -319,12 +313,11 @@ async def button_handler(update: Update, context: CallbackContext):
 
 # --- دوال الميزات المساعدة ---
 
-async def handle_daily_summary(query, context):
+async def handle_daily_summary(query: Update, context: CallbackContext):
     user_id = str(query.from_user.id)
     user_name = get_user_data(user_id).get('name')
     today = str(date.today())
     
-    # 1. الطقس
     weather_text = ""
     if WEATHER_API_KEY:
         try:
@@ -335,12 +328,10 @@ async def handle_daily_summary(query, context):
         except Exception as e:
             logger.warning(f"Could not fetch weather: {e}")
 
-    # 2. أهم مهمة
     tasks = get_user_data(user_id).get('tasks', [])
     first_undone_task = next((task['text'] for task in tasks if not task['done']), None)
     task_text = f"أهم مهمة لديك اليوم هي: '{first_undone_task}'. لا تنسها! 📝" if first_undone_task else "قائمة مهامك فارغة. يوم هادئ! 🍵"
     
-    # 3. تسجيل الدخول المتتالي (Streak)
     last_check_in = get_user_data(user_id).get('last_check_in')
     streak = get_user_data(user_id).get('check_in_streak', 0)
     if last_check_in != today:
@@ -353,12 +344,12 @@ async def handle_daily_summary(query, context):
     summary = f"☀️ صباح الخير، {user_name}! تم تسجيل دخولك لليوم الـ {streak} على التوالي.\n\n{weather_text}\n{task_text}"
     await query.edit_message_text(summary, reply_markup=get_main_keyboard())
 
-async def show_todo_list(update, context, is_query=False):
+async def show_todo_list(update: Update, context: CallbackContext, is_query=False):
     user_id = str(update.effective_user.id)
     tasks = get_user_data(user_id).get('tasks', [])
     text = f"📋 قائمة مهامك، {get_user_data(user_id).get('name')}:\n"
     if not tasks:
-        text += "\nلا توجد مهام بعد. يمكنك إضافة واحدة!"
+        text += "\nلا توجد مهام بعد."
     
     keyboard_buttons = []
     for i, task in enumerate(tasks):
@@ -376,24 +367,26 @@ async def show_todo_list(update, context, is_query=False):
             await update.message.reply_text(text, reply_markup=reply_markup)
     except BadRequest as e:
         if "Message is not modified" in str(e):
-            pass # تجاهل الخطأ إذا لم تتغير الرسالة
+            pass
         else:
             logger.error(f"Error updating To-Do list: {e}")
 
 # --- تشغيل البوت ---
 def main():
-    if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-        logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
+    if not TELEGRAM_TOKEN:
+        logger.critical("خطأ فادح: متغير البيئة TELEGRAM_TOKEN مطلوب.")
+        return
+    if not GEMINI_API_KEY:
+        logger.critical("خطأ فادح: متغير البيئة GEMINI_API_KEY مطلوب.")
         return
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # إضافة المعالجات
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (Stable Version) is running!")
+    logger.info("🌸 Mahiro (Fixed Version) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
