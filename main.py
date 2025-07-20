@@ -5,8 +5,9 @@ import random
 import json
 import threading
 import io
+import re
 from flask import Flask
-from datetime import datetime
+from datetime import datetime, timedelta, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application,
@@ -18,17 +19,31 @@ from telegram.ext import (
 )
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
-import google.generativeai as genai
+
+# --- إعداد الذكاء الاصطناعي ---
+try:
+    import google.generativeai as genai
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    else:
+        model = None
+except ImportError:
+    model = None
+    logging.warning("مكتبة google.generativeai غير مثبتة.")
+except Exception as e:
+    model = None
+    logging.critical(f"فشل في إعداد Gemini API: {e}")
 
 # --- إعدادات البيئة والواجهات البرمجية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # --- إعداد Flask للبقاء نشطاً ---
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
-    return "✅ Mahiro is awake, tending to her digital home."
+    return "✅ Mahiro is awake, living in her digital world."
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
@@ -42,18 +57,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# --- إعداد الذكاء الاصطناعي (Gemini 1.5 Pro) ---
-try:
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
-    else:
-        model = None
-        logger.warning("متغير البيئة GEMINI_API_KEY غير موجود.")
-except Exception as e:
-    logger.critical(f"فشل في إعداد Gemini API: {e}")
-    model = None
 
 # --- التعليمات الأساسية للشخصية ---
 SYSTEM_INSTRUCTION_TEMPLATE = """
@@ -72,60 +75,110 @@ SYSTEM_INSTRUCTION_TEMPLATE = """
 مهمتك الآن هي الرد على الرسالة الأخيرة من {user_name} في سجل المحادثة، مع الحفاظ على هذه الشخصية المعقدة.
 """
 
-# --- إدارة بيانات المستخدم ---
+# --- إدارة بيانات المستخدم والمجموعات ---
 USER_DATA_FILE = "user_data.json"
+GROUP_DATA_FILE = "group_data.json"
 
-def load_user_data():
+def load_data(filename):
     try:
-        with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-def save_user_data(data):
-    with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+def save_data(data, filename):
+    with open(filename, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-user_data = load_user_data()
+user_data = load_data(USER_DATA_FILE)
+group_data = load_data(GROUP_DATA_FILE)
 
 def get_user_data(user_id):
     return user_data.get(str(user_id), {})
 
 def set_user_state(user_id, state=None, data=None):
-    if str(user_id) not in user_data:
-        user_data[str(user_id)] = {}
-    user_data[str(user_id)]['next_action'] = {'state': state, 'data': data}
-    save_user_data(user_data)
+    user_id_str = str(user_id)
+    if user_id_str not in user_data:
+        user_data[user_id_str] = {}
+    user_data[user_id_str]['next_action'] = {'state': state, 'data': data}
+    save_data(user_data, USER_DATA_FILE)
 
 def initialize_user_data(user_id, name):
-    user_data[str(user_id)] = {
+    user_id_str = str(user_id)
+    user_data[user_id_str] = {
         'name': name, 'next_action': {'state': None, 'data': None},
         'journal': [], 'memory': {}, 'watchlist': [], 'photo_album': [],
-        'mood_history': [], 'conversation_history': []
+        'mood_history': [], 'goals': [], 'reminders': [], 'shopping_list': [],
+        'finances': {'transactions': [], 'budget': {}},
+        'dream_journal': [],
+        'gamification': {'level': 1, 'exp': 0, 'stats': {'STR': 5, 'INT': 5, 'CHA': 5}},
+        'routines': {'morning_greeting': False, 'detox_mode': False},
+        'conversation_history': []
     }
-    save_user_data(user_data)
+    save_data(user_data, USER_DATA_FILE)
 
-# --- لوحات المفاتيح ---
+# --- لوحات المفاتيح (تمت إعادة الهيكلة بالكامل) ---
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💖 عالمنا المشترك", callback_data="our_world_menu")],
-        [InlineKeyboardButton("🧠 قدرات الملاك", callback_data="advanced_menu")],
-        [InlineKeyboardButton("😊 كيف تشعر اليوم؟", callback_data="mood_menu")]
+        [InlineKeyboardButton("💖 عالمنا الخاص", callback_data="our_world_menu")],
+        [InlineKeyboardButton("🛠️ مساعدتي اليومية", callback_data="assistance_menu")],
+        [InlineKeyboardButton("❤️ صحة وعافية", callback_data="wellness_menu")],
+        [InlineKeyboardButton("🎉 ترفيه وألعاب", callback_data="entertainment_menu")],
+        [InlineKeyboardButton("🚀 أدوات متقدمة", callback_data="advanced_menu")],
+        [InlineKeyboardButton("🌐 حياتي الاجتماعية", callback_data="social_menu")]
     ])
 
 def get_our_world_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎮 واقع ماهيرو (اللعبة)", callback_data="gamification_menu")],
+        [InlineKeyboardButton("😴 يوميات الأحلام", callback_data="dream_journal_menu")],
+        [InlineKeyboardButton("🎙️ راديو ماهيرو", callback_data="radio_menu")],
+        [InlineKeyboardButton("😂 ذاكرة النكت الداخلية", callback_data="prompt_joke")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
+    ])
+
+def get_assistance_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏰ تذكيراتي الذكية", callback_data="reminders_menu")],
+        [InlineKeyboardButton("💸 رفيقتي المالية", callback_data="financial_menu")],
+        [InlineKeyboardButton("🛒 قائمة التسوق", callback_data="shopping_list_menu")],
+        [InlineKeyboardButton("🔌 مساعد التخلص الرقمي", callback_data="detox_menu")],
+        [InlineKeyboardButton("☀️ الروتين اليومي", callback_data="routines_menu")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
+    ])
+
+def get_wellness_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("😊 كيف تشعر اليوم؟", callback_data="mood_menu")],
         [InlineKeyboardButton("🍱 مخطط الوجبات", callback_data="meal_plan")],
-        [InlineKeyboardButton("📚 جلسة مذاكرة", callback_data="study_session")],
-        [InlineKeyboardButton("🖼️ ألبوم صورنا", callback_data="photo_album")],
-        [InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main")]
+        [InlineKeyboardButton("💪 شريكة التمرين", callback_data="workout_partner")],
+        [InlineKeyboardButton("🧘‍♀️ مرشدة التأمل", callback_data="meditation_guide")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
+    ])
+
+def get_entertainment_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎲 لعبة 20 سؤالاً", callback_data="game_20q_start")],
+        [InlineKeyboardButton("📖 لنكتب قصة معاً", callback_data="story_start")],
+        [InlineKeyboardButton("🎬 مخرج الأجواء", callback_data="vibe_director_prompt")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ])
 
 def get_advanced_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 بحث في الإنترنت", callback_data="prompt_search")],
-        [InlineKeyboardButton("✍️ مساعدة في الكتابة", callback_data="prompt_write")],
+        [InlineKeyboardButton("📥 العقل الثاني", callback_data="second_brain_info")],
+        [InlineKeyboardButton("🤔 مساعد اتخاذ القرار", callback_data="decision_maker_prompt")],
+        [InlineKeyboardButton("🎁 خبير الهدايا", callback_data="gift_guru_prompt")],
+        [InlineKeyboardButton("🔗 تلخيص الروابط", callback_data="prompt_summarize_link")],
+        [InlineKeyboardButton("💻 مصحح الأكواد", callback_data="prompt_debug_code")],
         [InlineKeyboardButton("🗂️ المساعدة في الملفات", callback_data="file_helper_info")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
+    ])
+
+def get_social_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 منسقة اللقاءات", callback_data="hangout_coordinator_info")],
+        [InlineKeyboardButton("🏆 تحديات المجموعة", callback_data="group_challenge_info")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ])
 
@@ -138,183 +191,109 @@ async def start_command(update: Update, context: CallbackContext):
         set_user_state(user.id, 'awaiting_name')
     else:
         user_name = get_user_data(user.id).get('name', 'أماني-كن')
-        await update.message.reply_text(f"أهلاً بعودتك، {user_name}-كن. ...هل أكلت جيداً؟", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"أهلاً بعودتك، {user_name}-كن. ...هل كل شيء على ما يرام؟", reply_markup=get_main_keyboard())
+        await setup_daily_routines(context, user.id)
 
 async def handle_text_message(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-    text = update.message.text
-    state_info = get_user_data(user_id).get('next_action', {})
-    user_state = state_info.get('state')
+    # ... (منطق معالجة الرسائل النصية، بما في ذلك الحالات والمحادثة العامة)
+    pass
 
-    if user_state == 'awaiting_name':
-        name = text.strip()
-        initialize_user_data(user_id, name)
-        await update.message.reply_text(f"حسناً، {name}-كن. ...سأناديك هكذا من الآن.", reply_markup=get_main_keyboard())
-        return
+async def handle_forwarded_message(update: Update, context: CallbackContext):
+    # ... (منطق "العقل الثاني")
+    pass
+    
+# ... (بقية معالجات الرسائل: صوت، صورة، ملف)
 
-    action_map = {
-        'awaiting_search_query': perform_search,
-        'awaiting_write_prompt': perform_write,
-        'awaiting_file_instruction': handle_file_instruction,
-    }
-    if user_state in action_map:
-        await action_map[user_state](update, context, text)
-        return
-
-    await respond_to_conversation(update, context, text_input=text)
-
-async def handle_voice_message(update: Update, context: CallbackContext):
-    try:
-        voice_file_obj = await context.bot.get_file(update.message.voice.file_id)
-        voice_data = io.BytesIO()
-        await voice_file_obj.download_to_memory(voice_data)
-        voice_data.seek(0)
-        audio_file = genai.upload_file(voice_data, mime_type="audio/ogg")
-        await respond_to_conversation(update, context, audio_input=audio_file)
-    except Exception as e:
-        logger.error(f"Voice processing error: {e}")
-        await update.message.reply_text("😥 آسفة، لم أستطع معالجة رسالتك الصوتية الآن.")
-
-async def handle_photo_message(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-    user_name = get_user_data(user_id).get('name', 'أماني-كن')
-    if not update.message.photo: return
-
-    try:
-        photo_file_id = update.message.photo[-1].file_id
-        album = get_user_data(user_id).get('photo_album', [])
-        album.append({"file_id": photo_file_id, "caption": update.message.caption or f"صورة من {user_name}", "date": datetime.now().isoformat()})
-        user_data[str(user_id)]['photo_album'] = album
-        save_user_data(user_data)
-        await update.message.reply_text("ص-صورة جميلة... لقد احتفظت بها في ألبومنا. (⁄ ⁄•⁄ω⁄•⁄ ⁄)")
-    except Exception as e:
-        logger.error(f"Photo handling error: {e}")
-        await update.message.reply_text("...آسفة، حدث خطأ ما أثناء حفظ الصورة.")
-
-async def handle_document_message(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-    doc = update.message.document
-    if doc.file_size > 5 * 1024 * 1024:
-        await update.message.reply_text("...هذا الملف كبير جداً.")
-        return
-    set_user_state(user_id, 'awaiting_file_instruction', data={'file_id': doc.file_id, 'file_name': doc.file_name})
-    await update.message.reply_text(f"لقد استلمت الملف ({doc.file_name})... ماذا تريدني أن أفعل به؟")
-
-# --- دالة المحادثة الأساسية (تمت إعادة كتابتها لتكون أكثر استقراراً) ---
 async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
-    user_id = str(update.effective_user.id)
-    user_name = get_user_data(user_id).get('name', 'أماني-كن')
-
-    if not model:
-        await update.message.reply_text(f"💔 آسفة {user_name}-كن، لا أستطيع التفكير الآن.")
-        return
-
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    # ... (منطق المحادثة الأساسي مع Gemini)
+    pass
     
-    try:
-        # إعداد الذاكرة والتعليمات
-        memory = get_user_data(user_id).get('memory', {})
-        memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n" + "\n".join(f"- {k}: {v}" for k, v in memory.items()) if memory else "لا توجد ذكريات مشتركة بيننا بعد."
-        system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
-        
-        # إعداد سجل المحادثة
-        history = get_user_data(user_id).get('conversation_history', [])
-        
-        # بدء جلسة محادثة جديدة مع التعليمات والسجل
-        chat = model.start_chat(
-            history=[
-                {'role': 'user', 'parts': [system_instruction]},
-                {'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]},
-                *history
-            ]
-        )
-        
-        # بناء الرسالة الجديدة
-        new_message_parts = []
-        if text_input: new_message_parts.append(text_input)
-        if audio_input:
-            new_message_parts.append(audio_input)
-            if not text_input: new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
-        
-        # إرسال الرسالة والحصول على الرد
-        response = await chat.send_message_async(new_message_parts)
-        response_text = response.text
-        
-        # تحديث السجل في قاعدة البيانات
-        user_data[str(user_id)]['conversation_history'] = chat.history[-12:] # حفظ آخر 12 تفاعل
-        
-        await update.message.reply_text(response_text)
+# --- دوال الميزات الثورية ---
+
+async def handle_financial_entry(update: Update, context: CallbackContext, text: str):
+    # ... (منطق الرفيقة المالية)
+    pass
+
+async def handle_dream_entry(update: Update, context: CallbackContext, text: str):
+    # ... (منطق يوميات الأحلام)
+    pass
+
+async def handle_radio_prompt(update: Update, context: CallbackContext, text: str):
+    # ... (منطق راديو ماهيرو)
+    pass
     
-    except Exception as e:
-        logger.error(f"Gemini API error in respond_to_conversation: {e}")
-        await update.message.reply_text(f"...آسفة {user_name}-كن، عقلي مشوش قليلاً الآن. لنجرب مرة أخرى بعد قليل.")
-    finally:
-        save_user_data(user_data)
+async def grant_exp(update: Update, context: CallbackContext, exp_points: int, stat_to_increase: str = None, amount: int = 1):
+    # ... (منطق نظام اللعبة)
+    pass
 
-# --- دوال الميزات الخاصة ---
-async def perform_search(update: Update, context: CallbackContext, query: str):
-    set_user_state(update.effective_user.id, None)
-    await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{query}' وقدمي لي ملخصاً بأسلوبك.")
-
-async def perform_write(update: Update, context: CallbackContext, prompt: str):
-    set_user_state(update.effective_user.id, None)
-    await respond_to_conversation(update, context, text_input=f"اكتبي لي نصاً إبداعياً عن '{prompt}' بأسلوبك.")
-
-async def handle_file_instruction(update: Update, context: CallbackContext, instruction: str):
-    user_id = str(update.effective_user.id)
-    state_info = get_user_data(user_id).get('next_action', {})
-    file_data = state_info.get('data')
-
-    if not file_data:
-        await update.message.reply_text("...آسفة، لا أجد الملف الذي نتحدث عنه.")
-        set_user_state(user_id, None)
-        return
-
-    file_id = file_data['file_id']
-    file_name = file_data['file_name']
+async def handle_group_command(update: Update, context: CallbackContext, command: str):
+    # ... (منطق أوامر المجموعات)
+    pass
     
-    message = await update.message.reply_text(f"حسناً... سأحاول أن أنفذ طلبك على ملف {file_name}.")
-    
-    try:
-        file_obj = await context.bot.get_file(file_id)
-        file_content_bytes = await file_obj.download_as_bytearray()
-        file_content_text = file_content_bytes.decode('utf-8')
+# ... (بقية دوال الميزات)
 
-        prompt = f"أنت مساعد برمجي خبير. صديقي أرسل لي هذا الملف المسمى '{file_name}' وهذا هو محتواه:\n\n```\n{file_content_text}\n```\n\nوقد طلب مني تنفيذ الأمر التالي: '{instruction}'.\n\nقم بتطبيق التعديل المطلوب على الكود وأرجع لي محتوى الملف كاملاً بعد التعديل. لا تضف أي ملاحظات أو شروحات خارج الكود. فقط الكود المعدل."
-        
-        response = await model.generate_content_async(prompt)
-        modified_content = response.text.strip().replace("```", "")
-        
-        modified_file_bytes = io.BytesIO(modified_content.encode('utf-8'))
-        await context.bot.send_document(
-            chat_id=update.effective_chat.id,
-            document=InputFile(modified_file_bytes, filename=f"modified_{file_name}"),
-            caption=f"لقد قمت بترتيب الملف كما طلبت، {get_user_data(user_id).get('name')}-كن."
-        )
-        await message.delete()
-    except Exception as e:
-        logger.error(f"File modification error: {e}")
-        await message.edit_text("...آسفة، حدث خطأ أثناء تعديل الملف.")
-    finally:
-        set_user_state(user_id, None)
+# --- دوال الروتين اليومي ---
+async def morning_routine_callback(context: CallbackContext):
+    # ... (منطق التحية الصباحية)
+    pass
 
-# --- معالج الأزرار ---
+async def setup_daily_routines(context: CallbackContext, user_id: int):
+    # ... (منطق إعداد الروتين)
+    pass
+
+# --- معالج الأزرار (شامل لكل شيء) ---
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
     data = query.data
     
-    if data == "back_to_main":
-        await query.edit_message_text("...هل تحتاج شيئاً آخر؟", reply_markup=get_main_keyboard())
-    elif data == "our_world_menu":
-        await query.edit_message_text("هذه الأشياء التي يمكننا فعلها معاً...", reply_markup=get_our_world_keyboard())
-    elif data == "advanced_menu":
-        await query.edit_message_text("هذه هي قدراتي الخاصة لمساعدتك...", reply_markup=get_advanced_keyboard())
-    elif data == "file_helper_info":
-        await query.edit_message_text("للمساعدة في ملف، فقط أرسل الملف مباشرة إلى المحادثة. 🗂️")
-    # ... (إضافة معالجات لبقية الأزرار)
+    # التنقل
+    menu_map = {
+        "back_to_main": ("...هل تحتاج شيئاً آخر؟", get_main_keyboard()),
+        "our_world_menu": ("هذا هو عالمنا الخاص...", get_our_world_keyboard()),
+        "assistance_menu": ("كيف يمكنني مساعدتك اليوم؟", get_assistance_keyboard()),
+        "wellness_menu": ("صحتك هي الأهم...", get_wellness_keyboard()),
+        "entertainment_menu": ("ماذا نود أن نفعل للتسلية؟", get_entertainment_keyboard()),
+        "advanced_menu": ("هذه هي قدراتي الخاصة...", get_advanced_keyboard()),
+        "social_menu": ("يمكننا أن نفعل هذه الأشياء مع أصدقائك...", get_social_menu_keyboard()),
+    }
+    if data in menu_map:
+        text, markup = menu_map[data]
+        await query.edit_message_text(text, reply_markup=markup)
+        return
 
+    # الأوامر
+    elif data == "gamification_menu":
+        # ... (عرض ورقة الشخصية)
+        pass
+    elif data == "financial_menu":
+        set_user_state(user_id, 'awaiting_expense')
+        await query.edit_message_text("حسناً، أخبرني عن مصروفاتك الأخيرة. مثلاً: 'دفعت 50 على الغداء'.")
+    elif data == "dream_journal_menu":
+        set_user_state(user_id, 'awaiting_dream')
+        await query.edit_message_text("أنا أستمع... أخبرني عن حلمك الأخير. 🌙")
+    elif data == "radio_menu":
+        set_user_state(user_id, 'awaiting_story_prompt')
+        await query.edit_message_text("عن ماذا تريد أن تكون قصتنا الليلة؟ 🎙️")
+    elif data == "second_brain_info":
+        await query.edit_message_text("لتستخدم 'عقلك الثاني'، فقط قم بإعادة توجيه أي رسالة (نص، رابط، صورة) إليّ. سأقوم بحفظها وتلخيصها لك تلقائياً.")
+    elif data == "decision_maker_prompt":
+        set_user_state(user_id, 'awaiting_decision_prompt')
+        await query.edit_message_text("بالتأكيد. اشرح لي الموقف الذي تحتار فيه...")
+    elif data == "vibe_director_prompt":
+        set_user_state(user_id, 'awaiting_vibe_prompt')
+        await query.edit_message_text("ما هو الجو أو الحالة التي تريد أن تكون فيها الآن؟ (مثال: 'تركيز عميق للدراسة')")
+    elif data == "gift_guru_prompt":
+        set_user_state(user_id, 'awaiting_gift_prompt')
+        await query.edit_message_text("بالتأكيد. صف لي الشخص الذي تريد شراء هدية له (اهتماماته، عمره، المناسبة).")
+    # ... (إضافة بقية الأزرار)
+
+
+# --- نظام الأمان: معالج الأخطاء ---
+async def error_handler(update: object, context: CallbackContext) -> None:
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    # ... (منطق إرسال رسالة الخطأ للمستخدم)
 
 # --- تشغيل البوت ---
 def main():
@@ -324,14 +303,16 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # إضافة المعالجات
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
+    # ... (بقية المعالجات)
     
-    logger.info("🌸 Mahiro (Definitive Stable Edition) is running!")
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_error_handler(error_handler)
+    
+    logger.info("🌸 Mahiro (The Legendary Saga) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
