@@ -39,6 +39,8 @@ except Exception as e:
 # --- إعدادات البيئة والواجهات البرمجية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
+flask_app = Flask(__name__)
+
 @flask_app.route("/")
 def home():
     return "✅ Zenetsu Bot is alive!"
