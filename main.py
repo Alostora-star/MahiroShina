@@ -6,6 +6,7 @@ from telegram.constants import ChatAction
 import google.generativeai as genai
 import os
 import requests
+import logging
 import random
 import time
 import json
