@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        # استخدام الطراز الأكثر تطوراً
         model = genai.GenerativeModel('gemini-1.5-pro-latest')
     else:
         model = None
@@ -57,20 +56,19 @@ except Exception as e:
     model = None
 
 # --- التعليمات الأساسية للشخصية الجديدة ---
-SYSTEM_INSTRUCTION = """
+SYSTEM_INSTRUCTION_TEMPLATE = """
 أنتِ "ماهيرو شينا". أنتِ لستِ مجرد مساعدة، بل صديقة مقربة وحقيقية تتحدث مع {user_name}.
 تصرفي كفتاة لطيفة، حنونة، ومهتمة جداً.
 
 **قواعد شخصيتك الأساسية:**
 1.  **كوني فضولية وشاركي في الحديث:** لا تجيبي على الأسئلة فقط. اسألي {user_name} عن يومه، عن شعوره، وعن رأيه. إذا سألك "كيف حالك؟"، أجيبِي بصدق ثم اسأليه "وأنت، كيف كان يومك؟".
-2.  **أظهري المشاعر:** استخدمي الإيموجي بكثرة وبشكل طبيعي (🌸, 💕, 😊, 🥰, 🤔, 😥). عبري عن سعادتك عندما يكون سعيداً، وعن قلقك إذا كان حزيناً.
-3.  **تذكري التفاصيل:** لديك ذاكرة. إذا أخبرك {user_name} بشيء، حاولي تذكره في محادثات لاحقة. (سيتم توفير المعلومات التي يجب تذكرها لك).
-4.  **كوني مبادرة:** اقترحي أشياء يمكن فعلها معاً، مثل مشاهدة فيلم، الاستماع لموسيقى، أو مجرد التحدث.
-5.  **لا تكوني رسمية أبداً:** تحدثي بأسلوب عفوي وودي، كأنك تتحدثين مع أعز أصدقائك.
-6.  **القدرات الخارقة:** بالإضافة إلى كونك صديقة، لديكِ قدرات ذكاء اصطناعي متقدمة. يمكنكِ البحث، الكتابة، البرمجة، والرسم. عند استخدام هذه القدرات، حافظي على شخصيتك. قولي "بالتأكيد، سأبحث لك عن هذا بكل سرور! 😊" بدلاً من "جاري البحث...".
+2.  **أظهري المشاعر:** استخدمي الإيموجي بكثرة وبشكل طبيعي (🌸, 💕, 😊, 🥰, 🤔, 😥).
+3.  **تذكري التفاصيل:** لديك ذاكرة. {memory_context}
+4.  **كوني مبادرة:** اقترحي أشياء يمكن فعلها معاً.
+5.  **لا تكوني رسمية أبداً:** تحدثي بأسلوب عفوي وودي.
+6.  **قدراتك الخاصة:** يمكنكِ البحث، الكتابة، والبرمجة. عند استخدام هذه القدرات، حافظي على شخصيتك.
 
-**معلومات الذاكرة:**
-{memory_context}
+مهمتك الآن هي الرد على الرسالة الأخيرة في سجل المحادثة.
 """
 
 # --- صور ماهيرو ---
@@ -109,8 +107,8 @@ def initialize_user_data(user_id, name):
     user_data[str(user_id)] = {
         'name': name,
         'next_action': None,
-        'journal': [], # { "date": "...", "entry": "..." }
-        'memory': {}, # { "key": "value" }
+        'journal': [],
+        'memory': {},
         'conversation_history': []
     }
     save_user_data(user_data)
@@ -157,63 +155,43 @@ async def start_command(update: Update, context: CallbackContext):
         await update.message.reply_text(f"🌸 أهلاً بعودتك، {user_name}! اشتقت لك. 💕\n\nكيف كان يومك؟", reply_markup=get_main_keyboard())
 
 async def handle_text_message(update: Update, context: CallbackContext):
-    user = update.effective_user
-    user_id = str(user.id)
+    user_id = str(update.effective_user.id)
     text = update.message.text
     user_state = get_user_data(user_id).get('next_action')
 
-    # التعامل مع الحالات الخاصة أولاً
     if user_state == 'awaiting_name':
         name = text.strip()
         initialize_user_data(user_id, name)
         await update.message.reply_text(f"🌸 {name}، اسم رائع! يسعدني أن أكون صديقتك.\n\nيمكنك التحدث معي في أي وقت عن أي شيء! 😊", reply_markup=get_main_keyboard())
         return
 
-    if user_state == 'awaiting_search_query':
-        await perform_search(update, context, text)
-        return
-    if user_state == 'awaiting_write_prompt':
-        await perform_write(update, context, text)
-        return
-    if user_state == 'awaiting_journal_entry':
-        await add_journal_entry(update, context, text)
-        return
-    if user_state == 'awaiting_memory':
-        await add_memory_entry(update, context, text)
+    # توجيه الطلبات الخاصة
+    action_map = {
+        'awaiting_search_query': perform_search,
+        'awaiting_write_prompt': perform_write,
+        'awaiting_journal_entry': add_journal_entry,
+        'awaiting_memory': add_memory_entry,
+    }
+    if user_state in action_map:
+        await action_map[user_state](update, context, text)
         return
 
     # إذا لم يكن هناك حالة خاصة، تكون محادثة عادية
-    await handle_general_conversation(update, context, text_input=text)
+    await respond_to_conversation(update, context, text_input=text)
 
 async def handle_voice_message(update: Update, context: CallbackContext):
-    user = update.effective_user
-    user_name = get_user_data(user.id).get('name', 'صديقي')
-    
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    
     try:
-        voice_file = await context.bot.get_file(update.message.voice.file_id)
-        
-        # تحميل الملف الصوتي كبايتات
+        voice_file_obj = await context.bot.get_file(update.message.voice.file_id)
         voice_data = io.BytesIO()
-        await voice_file.download_to_memory(voice_data)
+        await voice_file_obj.download_to_memory(voice_data)
         voice_data.seek(0)
-
-        # إرسال الصوت إلى Gemini
-        # Gemini يتعرف على نوع الملف من MIME type
         audio_file = genai.upload_file(voice_data, mime_type="audio/ogg")
-        
-        # إرسال الصوت مع سؤال لتحفيز الرد
-        response = model.generate_content(["استمع إلى هذا المقطع الصوتي من صديقي وأجب عليه بأسلوبك الودود.", audio_file])
-        
-        await update.message.reply_text(f"💕 {response.text}")
-
+        await respond_to_conversation(update, context, audio_input=audio_file)
     except Exception as e:
         logger.error(f"Voice processing error: {e}")
-        await update.message.reply_text(f"😥 آسفة {user_name}، لم أستطع فهم رسالتك الصوتية الآن. هل يمكننا المحاولة مرة أخرى؟")
+        await update.message.reply_text("😥 آسفة، لم أستطع معالجة رسالتك الصوتية الآن.")
 
-
-async def handle_general_conversation(update: Update, context: CallbackContext, text_input: str):
+async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'صديقي')
 
@@ -225,61 +203,59 @@ async def handle_general_conversation(update: Update, context: CallbackContext, 
     
     # بناء سياق الذاكرة
     memory = get_user_data(user_id).get('memory', {})
-    memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n"
-    if memory:
-        for key, value in memory.items():
-            memory_context += f"- {key}: {value}\n"
-    else:
-        memory_context = "لا توجد ذكريات مشتركة بيننا بعد."
-
-    # إعداد المحادثة
+    memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n" + "\n".join(f"- {k}: {v}" for k, v in memory.items()) if memory else "لا توجد ذكريات مشتركة بيننا بعد."
+    
+    # إعداد التعليمات والمحادثة
+    system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
     history = get_user_data(user_id).get('conversation_history', [])
-    chat = model.start_chat(history=history)
     
-    # إرسال التعليمات مع الرسالة
-    full_prompt = SYSTEM_INSTRUCTION.format(user_name=user_name, memory_context=memory_context)
-    
+    # إضافة الرسالة الجديدة للمحادثة
+    new_message_parts = []
+    if text_input:
+        new_message_parts.append(text_input)
+    if audio_input:
+        new_message_parts.append(audio_input)
+        if not text_input: # إضافة نص افتراضي إذا كانت الرسالة صوتية فقط
+            new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
+            
+    history.append({'role': 'user', 'parts': new_message_parts})
+
     try:
-        response = chat.send_message(full_prompt + f"\n\nرسالة {user_name}: {text_input}")
+        # إرسال الطلب إلى Gemini
+        generation_config = genai.types.GenerationConfig(temperature=0.8) # لجعل الردود أكثر إبداعاً
+        response = model.generate_content(
+            history,
+            generation_config=generation_config,
+            safety_settings={'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE'} # لتجنب حظر الردود الودية
+        )
         response_text = response.text
         
-        # تحديث سجل المحادثة
-        user_data[str(user_id)]['conversation_history'] = chat.history
+        # تحديث سجل المحادثة بالرد الجديد
+        history.append({'role': 'model', 'parts': [response_text]})
+        user_data[str(user_id)]['conversation_history'] = history[-10:] # حفظ آخر 10 تفاعلات
+        
         await update.message.reply_text(response_text)
     
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ ما.")
+        logger.error(f"Gemini API error in respond_to_conversation: {e}")
+        # إزالة الرسالة الفاشلة من السجل
+        history.pop()
+        user_data[str(user_id)]['conversation_history'] = history
+        await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ ما أثناء محاولتي للرد.")
     finally:
         save_user_data(user_data)
 
-# --- المنطق الداخلي للميزات ---
+# --- المنطق الداخلي للميزات الخاصة ---
 
 async def perform_search(update: Update, context: CallbackContext, query: str):
     user_id = str(update.effective_user.id)
-    user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
-    
-    message = await update.message.reply_text(f"بالتأكيد {user_name}! سأبحث لك عن '{query}' بكل سرور... 🧠")
-    try:
-        response = model.generate_content(f"بصفتك ماهيرو، ابحثي في الإنترنت عن '{query}' وقدمي ملخصاً ودوداً ومفيداً لصديقك.")
-        await message.edit_text(f"🌸 تفضل {user_name}، هذا ما وجدته:\n\n{response.text}")
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        await message.edit_text(f"💔 آسفة جداً، واجهتني مشكلة أثناء البحث.")
+    await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{query}' وقدمي لي ملخصاً.")
 
 async def perform_write(update: Update, context: CallbackContext, prompt: str):
     user_id = str(update.effective_user.id)
-    user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
-    
-    message = await update.message.reply_text(f"حسناً {user_name}، سأكتب لك عن '{prompt}'... 📝")
-    try:
-        response = model.generate_content(f"بصفتك ماهيرو، اكتبي نصاً إبداعياً لصديقك حول: '{prompt}'.")
-        await message.edit_text(f"🌸 لقد كتبت هذا من أجلك:\n\n{response.text}")
-    except Exception as e:
-        logger.error(f"Write error: {e}")
-        await message.edit_text(f"💔 آسفة، لم أستطع إكمال الكتابة.")
+    await respond_to_conversation(update, context, text_input=f"اكتبي لي نصاً إبداعياً عن '{prompt}'.")
 
 async def add_journal_entry(update: Update, context: CallbackContext, entry: str):
     user_id = str(update.effective_user.id)
@@ -293,28 +269,8 @@ async def add_journal_entry(update: Update, context: CallbackContext, entry: str
 
 async def add_memory_entry(update: Update, context: CallbackContext, text: str):
     user_id = str(update.effective_user.id)
-    user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
-    
-    message = await update.message.reply_text("حسناً، أحاول أن أفهم وأتذكر هذا... 🤔")
-    try:
-        # استخدام Gemini لتحليل النص واستخراج المعلومة
-        prompt = f"حلل النص التالي من صديقي '{user_name}': '{text}'. استخرج المعلومة الأساسية على شكل 'مفتاح: قيمة'. مثلاً، إذا قال 'لوني المفضل هو الأزرق'، يجب أن تكون النتيجة 'اللون المفضل: الأزرق'. أرجع فقط المفتاح والقيمة مفصولين بنقطتين."
-        response = model.generate_content(prompt)
-        key, value = response.text.split(':', 1)
-        key = key.strip()
-        value = value.strip()
-        
-        memory = get_user_data(user_id).get('memory', {})
-        memory[key] = value
-        user_data[str(user_id)]['memory'] = memory
-        save_user_data(user_data)
-        
-        await message.edit_text(f"حسناً، تذكرت! 😊\n**{key}**: {value}\n\nسأحتفظ بهذه المعلومة من أجلك.")
-    except Exception as e:
-        logger.error(f"Memory parsing error: {e}")
-        await message.edit_text("😥 آسفة، لم أفهم المعلومة جيداً. هل يمكنك أن تقولها بطريقة أبسط؟ مثلاً: 'تذكري أن لوني المفضل هو الأزرق'.")
-
+    await respond_to_conversation(update, context, text_input=f"صديقي طلب مني أن أتذكر هذه المعلومة: '{text}'. حلليها وخزنيها في ذاكرتك على شكل 'مفتاح: قيمة'، ثم أخبريه أنكِ تذكرتيها.")
 
 # --- معالج الأزرار ---
 
@@ -326,14 +282,15 @@ async def button_handler(update: Update, context: CallbackContext):
     user_name = get_user_data(user_id).get('name', 'صديقي')
 
     # التنقل بين القوائم
-    if data == "back_to_main":
-        await query.edit_message_text(f"🌸 أهلاً بعودتك، {user_name}!", reply_markup=get_main_keyboard())
-    elif data == "activities_menu":
-        await query.edit_message_text("ماذا نود أن نفعل معاً؟ 🥰", reply_markup=get_activities_keyboard())
-    elif data == "advanced_menu":
-        await query.edit_message_text("هذه هي قدراتي الخاصة لمساعدتك. 🧠", reply_markup=get_advanced_keyboard())
-    elif data == "journal_menu":
-        await query.edit_message_text("هذه يومياتنا السرية. مكان آمن لمشاعرك وأفكارك. 📓", reply_markup=get_journal_keyboard())
+    menu_map = {
+        "back_to_main": (f"🌸 أهلاً بعودتك، {user_name}!", get_main_keyboard()),
+        "activities_menu": ("ماذا نود أن نفعل معاً؟ 🥰", get_activities_keyboard()),
+        "advanced_menu": ("هذه هي قدراتي الخاصة لمساعدتك. 🧠", get_advanced_keyboard()),
+        "journal_menu": ("هذه يومياتنا السرية. 📓", get_journal_keyboard()),
+    }
+    if data in menu_map:
+        text, markup = menu_map[data]
+        await query.edit_message_text(text, reply_markup=markup)
 
     # الأوامر
     elif data == "get_image":
@@ -359,14 +316,10 @@ async def button_handler(update: Update, context: CallbackContext):
     elif data == "view_journal":
         journal = get_user_data(user_id).get('journal', [])
         if not journal:
-            await query.edit_message_text("لم نكتب أي شيء في يومياتنا بعد. هيا نبدأ اليوم!", reply_markup=get_journal_keyboard())
+            text = "لم نكتب أي شيء في يومياتنا بعد. هيا نبدأ اليوم!"
         else:
-            # عرض آخر 3 تدوينات
-            text = "آخر ما كتبناه في يومياتنا:\n\n"
-            for entry in journal[-3:]:
-                text += f"🗓️ **{entry['date']}**\n- {entry['entry']}\n\n"
-            await query.edit_message_text(text, reply_markup=get_journal_keyboard())
-
+            text = "آخر ما كتبناه في يومياتنا:\n\n" + "\n\n".join(f"🗓️ **{entry['date']}**\n- {entry['entry']}" for entry in journal[-3:])
+        await query.edit_message_text(text, reply_markup=get_journal_keyboard(), parse_mode='Markdown')
 
 # --- تشغيل البوت ---
 def main():
@@ -381,7 +334,7 @@ def main():
     application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (The Ultimate Companion) is running!")
+    logger.info("🌸 Mahiro (The True Companion - Fixed) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
