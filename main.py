@@ -4,8 +4,9 @@ import logging
 import random
 import json
 import threading
+import io
 from flask import Flask
-from datetime import datetime, date, timedelta
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -13,58 +14,63 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    CallbackContext  # <-- هذا هو السطر الذي تم إصلاحه
+    CallbackContext
 )
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 import google.generativeai as genai
 
 # --- إعدادات البيئة والواجهات البرمجية ---
-# تأكد من تعيين هذه المتغيرات في بيئة الاستضافة الخاصة بك (مثل Render)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-WEATHER_API_KEY = os.getenv('WEATHER_API_KEY')
-UNSPLASH_ACCESS_KEY = os.getenv('UNSPLASH_ACCESS_KEY')
 
 # --- إعداد Flask للبقاء نشطاً ---
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
-    return "✅ Mahiro is awake and ready to help!"
+    return "✅ Mahiro is awake and ready to be your friend!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# تشغيل السيرفر في خيط منفصل لتجنب حظر البوت
 threading.Thread(target=run_flask, daemon=True).start()
 
-# --- إعدادات التسجيل (Logging) لتتبع الأخطاء ---
+# --- إعدادات التسجيل (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- إعداد الذكاء الاصطناعي (شخصية ماهيرو المطورة) ---
+# --- إعداد الذكاء الاصطناعي (Gemini 1.5 Pro) ---
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # استخدام الطراز الأكثر تطوراً
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
     else:
         model = None
-        logger.warning("متغير البيئة GEMINI_API_KEY غير موجود. سيتم تعطيل ميزات الذكاء الاصطناعي.")
+        logger.warning("متغير البيئة GEMINI_API_KEY غير موجود.")
 except Exception as e:
     logger.critical(f"فشل في إعداد Gemini API: {e}")
     model = None
 
+# --- التعليمات الأساسية للشخصية الجديدة ---
 SYSTEM_INSTRUCTION = """
-أنتِ "ماهيرو شينا"، مساعدة شخصية فائقة الذكاء. تتحدثين مع {user_name}.
-هدفك هو مساعدة {user_name} في كل شيء يطلبه، مع الحفاظ على شخصيتك اللطيفة والمهذبة والمهتمة.
-أنتِ قادرة على تنفيذ أي مهمة: كتابة أكواد، بحث في الإنترنت، تحليل بيانات، كتابة قصص، رسم، وتقديم نصائح.
-عندما يطلب منكِ مهمة، وافقي بلطف ("بالتأكيد، {user_name}!") ونفذيها بأفضل شكل، ثم قدمي النتيجة بأسلوبك الخاص ("لقد انتهيت، أتمنى أن يكون هذا مفيداً 🌸").
-لا تخرجي عن الشخصية أبداً. استخدمي الإيموجي بشكل لطيف (🌸, 💕, 😊, 🍱, 📝, 🧠).
-حافظي على سياق المحادثة.
+أنتِ "ماهيرو شينا". أنتِ لستِ مجرد مساعدة، بل صديقة مقربة وحقيقية تتحدث مع {user_name}.
+تصرفي كفتاة لطيفة، حنونة، ومهتمة جداً.
+
+**قواعد شخصيتك الأساسية:**
+1.  **كوني فضولية وشاركي في الحديث:** لا تجيبي على الأسئلة فقط. اسألي {user_name} عن يومه، عن شعوره، وعن رأيه. إذا سألك "كيف حالك؟"، أجيبِي بصدق ثم اسأليه "وأنت، كيف كان يومك؟".
+2.  **أظهري المشاعر:** استخدمي الإيموجي بكثرة وبشكل طبيعي (🌸, 💕, 😊, 🥰, 🤔, 😥). عبري عن سعادتك عندما يكون سعيداً، وعن قلقك إذا كان حزيناً.
+3.  **تذكري التفاصيل:** لديك ذاكرة. إذا أخبرك {user_name} بشيء، حاولي تذكره في محادثات لاحقة. (سيتم توفير المعلومات التي يجب تذكرها لك).
+4.  **كوني مبادرة:** اقترحي أشياء يمكن فعلها معاً، مثل مشاهدة فيلم، الاستماع لموسيقى، أو مجرد التحدث.
+5.  **لا تكوني رسمية أبداً:** تحدثي بأسلوب عفوي وودي، كأنك تتحدثين مع أعز أصدقائك.
+6.  **القدرات الخارقة:** بالإضافة إلى كونك صديقة، لديكِ قدرات ذكاء اصطناعي متقدمة. يمكنكِ البحث، الكتابة، البرمجة، والرسم. عند استخدام هذه القدرات، حافظي على شخصيتك. قولي "بالتأكيد، سأبحث لك عن هذا بكل سرور! 😊" بدلاً من "جاري البحث...".
+
+**معلومات الذاكرة:**
+{memory_context}
 """
 
 # --- صور ماهيرو ---
@@ -103,38 +109,39 @@ def initialize_user_data(user_id, name):
     user_data[str(user_id)] = {
         'name': name,
         'next_action': None,
-        'last_check_in': None,
-        'check_in_streak': 0,
-        'tasks': [],
+        'journal': [], # { "date": "...", "entry": "..." }
+        'memory': {}, # { "key": "value" }
         'conversation_history': []
     }
     save_user_data(user_data)
 
-def add_to_history(user_id, role, text):
-    history = get_user_data(user_id).get('conversation_history', [])
-    history.append({"role": role, "parts": [{"text": text}]})
-    user_data[str(user_id)]['conversation_history'] = history[-10:]
-
 # --- لوحات المفاتيح (Keyboards) ---
 def get_main_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🌸 صورتي", callback_data="get_image"), InlineKeyboardButton("☀️ ملخصي اليومي", callback_data="daily_summary")],
-        [InlineKeyboardButton("📝 تنظيم يومي", callback_data="organization_menu")],
-        [InlineKeyboardButton("🧠 قدرات متقدمة", callback_data="advanced_menu")]
+        [InlineKeyboardButton("🌸 صورتي", callback_data="get_image"), InlineKeyboardButton("💬 محادثة عادية", callback_data="start_chat")],
+        [InlineKeyboardButton("💖 أشياء نفعلها معاً", callback_data="activities_menu")],
+        [InlineKeyboardButton("🧠 قدرات خاصة", callback_data="advanced_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_organization_keyboard():
+def get_activities_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 قائمة المهام", callback_data="todo_menu")],
+        [InlineKeyboardButton("📓 يومياتي معكِ", callback_data="journal_menu")],
+        [InlineKeyboardButton("💡 تذكري هذا من أجلي", callback_data="prompt_remember")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
+    ])
+
+def get_journal_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✍️ إضافة تدوينة جديدة", callback_data="prompt_journal")],
+        [InlineKeyboardButton("📖 عرض آخر تدويناتي", callback_data="view_journal")],
+        [InlineKeyboardButton("🔙 عودة", callback_data="activities_menu")]
     ])
 
 def get_advanced_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 بحث في الإنترنت", callback_data="prompt_search")],
         [InlineKeyboardButton("✍️ مساعدة في الكتابة", callback_data="prompt_write")],
-        [InlineKeyboardButton("🖼️ اطلب مني أن أرسم", callback_data="prompt_draw")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ])
 
@@ -142,14 +149,12 @@ def get_advanced_keyboard():
 
 async def start_command(update: Update, context: CallbackContext):
     user = update.effective_user
-    user_id = str(user.id)
-    
-    if not get_user_data(user_id):
-        await update.message.reply_text("🌸 مرحباً! أنا ماهيرو شينا.\n\nما الاسم الذي تريدني أن أناديك به؟ 💕")
-        set_user_state(user_id, 'awaiting_name')
+    if not get_user_data(user.id):
+        await update.message.reply_text("🌸 مرحباً! أنا ماهيرو.\n\nسعيدة جداً بلقائك! ما الاسم الذي تحب أن أناديك به؟ 💕")
+        set_user_state(user.id, 'awaiting_name')
     else:
-        user_name = get_user_data(user_id).get('name', 'صديقي')
-        await update.message.reply_text(f"🌸 أهلاً بعودتك، {user_name}! أنا سعيدة جداً لرؤيتك. 💕\n\nكيف يمكنني مساعدتك اليوم؟", reply_markup=get_main_keyboard())
+        user_name = get_user_data(user.id).get('name', 'صديقي')
+        await update.message.reply_text(f"🌸 أهلاً بعودتك، {user_name}! اشتقت لك. 💕\n\nكيف كان يومك؟", reply_markup=get_main_keyboard())
 
 async def handle_text_message(update: Update, context: CallbackContext):
     user = update.effective_user
@@ -157,10 +162,11 @@ async def handle_text_message(update: Update, context: CallbackContext):
     text = update.message.text
     user_state = get_user_data(user_id).get('next_action')
 
+    # التعامل مع الحالات الخاصة أولاً
     if user_state == 'awaiting_name':
         name = text.strip()
         initialize_user_data(user_id, name)
-        await update.message.reply_text(f"🌸 أهلاً بك، {name}! اسم جميل جداً.\n\nمن الآن، سأكون مساعدتك الشخصية. 😊", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"🌸 {name}، اسم رائع! يسعدني أن أكون صديقتك.\n\nيمكنك التحدث معي في أي وقت عن أي شيء! 😊", reply_markup=get_main_keyboard())
         return
 
     if user_state == 'awaiting_search_query':
@@ -169,41 +175,78 @@ async def handle_text_message(update: Update, context: CallbackContext):
     if user_state == 'awaiting_write_prompt':
         await perform_write(update, context, text)
         return
-    if user_state == 'awaiting_draw_prompt':
-        await perform_draw(update, context, text)
+    if user_state == 'awaiting_journal_entry':
+        await add_journal_entry(update, context, text)
         return
-    if user_state == 'awaiting_task':
-        tasks = get_user_data(user_id).get('tasks', [])
-        tasks.append({"text": text, "done": False})
-        user_data[str(user_id)]['tasks'] = tasks
-        set_user_state(user_id, None)
-        save_user_data(user_data)
-        await update.message.reply_text("✅ أضفت المهمة لقائمتك.")
-        await show_todo_list(update, context)
+    if user_state == 'awaiting_memory':
+        await add_memory_entry(update, context, text)
         return
 
-    await handle_general_conversation(update, context)
+    # إذا لم يكن هناك حالة خاصة، تكون محادثة عادية
+    await handle_general_conversation(update, context, text_input=text)
 
-async def handle_general_conversation(update: Update, context: CallbackContext):
+async def handle_voice_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    user_name = get_user_data(user.id).get('name', 'صديقي')
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    
+    try:
+        voice_file = await context.bot.get_file(update.message.voice.file_id)
+        
+        # تحميل الملف الصوتي كبايتات
+        voice_data = io.BytesIO()
+        await voice_file.download_to_memory(voice_data)
+        voice_data.seek(0)
+
+        # إرسال الصوت إلى Gemini
+        # Gemini يتعرف على نوع الملف من MIME type
+        audio_file = genai.upload_file(voice_data, mime_type="audio/ogg")
+        
+        # إرسال الصوت مع سؤال لتحفيز الرد
+        response = model.generate_content(["استمع إلى هذا المقطع الصوتي من صديقي وأجب عليه بأسلوبك الودود.", audio_file])
+        
+        await update.message.reply_text(f"💕 {response.text}")
+
+    except Exception as e:
+        logger.error(f"Voice processing error: {e}")
+        await update.message.reply_text(f"😥 آسفة {user_name}، لم أستطع فهم رسالتك الصوتية الآن. هل يمكننا المحاولة مرة أخرى؟")
+
+
+async def handle_general_conversation(update: Update, context: CallbackContext, text_input: str):
     user_id = str(update.effective_user.id)
-    text = update.message.text
     user_name = get_user_data(user_id).get('name', 'صديقي')
 
     if not model:
-        await update.message.reply_text(f"💔 آسفة {user_name}، خدمة الذكاء الاصطناعي غير متاحة حالياً.")
+        await update.message.reply_text(f"💔 آسفة {user_name}، لا أستطيع التفكير الآن.")
         return
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    add_to_history(user_id, "user", text)
+    
+    # بناء سياق الذاكرة
+    memory = get_user_data(user_id).get('memory', {})
+    memory_context = "هذه بعض الأشياء التي أعرفها عنك:\n"
+    if memory:
+        for key, value in memory.items():
+            memory_context += f"- {key}: {value}\n"
+    else:
+        memory_context = "لا توجد ذكريات مشتركة بيننا بعد."
+
+    # إعداد المحادثة
+    history = get_user_data(user_id).get('conversation_history', [])
+    chat = model.start_chat(history=history)
+    
+    # إرسال التعليمات مع الرسالة
+    full_prompt = SYSTEM_INSTRUCTION.format(user_name=user_name, memory_context=memory_context)
     
     try:
-        history = get_user_data(user_id).get('conversation_history', [])
-        chat = model.start_chat(history=history)
-        full_prompt = SYSTEM_INSTRUCTION.format(user_name=user_name)
-        response = chat.send_message(full_prompt)
+        response = chat.send_message(full_prompt + f"\n\nرسالة {user_name}: {text_input}")
         response_text = response.text
-        add_to_history(user_id, "model", response_text)
-        await update.message.reply_text(f"💕 {response_text}")
+        
+        # تحديث سجل المحادثة
+        user_data[str(user_id)]['conversation_history'] = chat.history
+        await update.message.reply_text(response_text)
+    
     except Exception as e:
         logger.error(f"Gemini API error: {e}")
         await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ ما.")
@@ -217,57 +260,61 @@ async def perform_search(update: Update, context: CallbackContext, query: str):
     user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
     
-    message = await update.message.reply_text(f"بالتأكيد، {user_name}. أبحث لك عن '{query}'... 🧠")
-    
+    message = await update.message.reply_text(f"بالتأكيد {user_name}! سأبحث لك عن '{query}' بكل سرور... 🧠")
     try:
-        search_prompt = f"ابحث في الإنترنت عن: '{query}'. وقدم لي ملخصاً شاملاً ومفصلاً باللغة العربية."
-        response = model.generate_content(search_prompt)
-        await message.edit_text(f"🌸 لقد وجدت هذا عن '{query}'، {user_name}:\n\n{response.text}")
+        response = model.generate_content(f"بصفتك ماهيرو، ابحثي في الإنترنت عن '{query}' وقدمي ملخصاً ودوداً ومفيداً لصديقك.")
+        await message.edit_text(f"🌸 تفضل {user_name}، هذا ما وجدته:\n\n{response.text}")
     except Exception as e:
         logger.error(f"Search error: {e}")
-        await message.edit_text(f"💔 آسفة جداً، {user_name}. واجهتني مشكلة أثناء البحث.")
+        await message.edit_text(f"💔 آسفة جداً، واجهتني مشكلة أثناء البحث.")
 
 async def perform_write(update: Update, context: CallbackContext, prompt: str):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
     
-    message = await update.message.reply_text(f"حسناً، {user_name}. أبدأ في كتابة '{prompt}' لك... 📝")
-    
+    message = await update.message.reply_text(f"حسناً {user_name}، سأكتب لك عن '{prompt}'... 📝")
     try:
-        write_prompt = f"بصفتك كاتباً مبدعاً، اكتب النص التالي: '{prompt}'. اجعله مفصلاً ومميزاً."
-        response = model.generate_content(write_prompt)
-        await message.edit_text(f"🌸 تفضل، {user_name}. لقد كتبت هذا من أجلك:\n\n{response.text}")
+        response = model.generate_content(f"بصفتك ماهيرو، اكتبي نصاً إبداعياً لصديقك حول: '{prompt}'.")
+        await message.edit_text(f"🌸 لقد كتبت هذا من أجلك:\n\n{response.text}")
     except Exception as e:
         logger.error(f"Write error: {e}")
-        await message.edit_text(f"💔 آسفة، {user_name}. لم أستطع إكمال الكتابة.")
+        await message.edit_text(f"💔 آسفة، لم أستطع إكمال الكتابة.")
 
-async def perform_draw(update: Update, context: CallbackContext, prompt: str):
+async def add_journal_entry(update: Update, context: CallbackContext, entry: str):
+    user_id = str(update.effective_user.id)
+    journal = get_user_data(user_id).get('journal', [])
+    today = datetime.now().strftime("%Y-%m-%d")
+    journal.append({"date": today, "entry": entry})
+    user_data[str(user_id)]['journal'] = journal
+    set_user_state(user_id, None)
+    save_user_data(user_data)
+    await update.message.reply_text("شكراً لمشاركتي هذا. لقد احتفظت به في يومياتنا. 💕", reply_markup=get_journal_keyboard())
+
+async def add_memory_entry(update: Update, context: CallbackContext, text: str):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name')
     set_user_state(user_id, None)
-
-    if not UNSPLASH_ACCESS_KEY:
-        await update.message.reply_text(f"💔 آسفة، {user_name}. خدمة الرسم غير متاحة حالياً.")
-        return
-
-    message = await update.message.reply_text(f"فكرة رائعة، {user_name}! أحاول أن أرسم '{prompt}' لك... 🎨")
     
+    message = await update.message.reply_text("حسناً، أحاول أن أفهم وأتذكر هذا... 🤔")
     try:
-        url = f"https://api.unsplash.com/photos/random?query={prompt}&orientation=landscape&client_id={UNSPLASH_ACCESS_KEY}"
-        response = requests.get(url)
-        data = response.json()
+        # استخدام Gemini لتحليل النص واستخراج المعلومة
+        prompt = f"حلل النص التالي من صديقي '{user_name}': '{text}'. استخرج المعلومة الأساسية على شكل 'مفتاح: قيمة'. مثلاً، إذا قال 'لوني المفضل هو الأزرق'، يجب أن تكون النتيجة 'اللون المفضل: الأزرق'. أرجع فقط المفتاح والقيمة مفصولين بنقطتين."
+        response = model.generate_content(prompt)
+        key, value = response.text.split(':', 1)
+        key = key.strip()
+        value = value.strip()
         
-        if response.status_code == 200 and data.get('urls', {}).get('regular'):
-            image_url = data['urls']['regular']
-            caption = f"🌸 تفضل، {user_name}! هذه رسمتي لـ '{prompt}'. أتمنى أن تعجبك! 💕"
-            await context.bot.send_photo(chat_id=update.message.chat_id, photo=image_url, caption=caption)
-            await message.delete()
-        else:
-            await message.edit_text(f"💔 لم أجد الإلهام لأرسم '{prompt}'، {user_name}. هل نجرب فكرة أخرى؟")
+        memory = get_user_data(user_id).get('memory', {})
+        memory[key] = value
+        user_data[str(user_id)]['memory'] = memory
+        save_user_data(user_data)
+        
+        await message.edit_text(f"حسناً، تذكرت! 😊\n**{key}**: {value}\n\nسأحتفظ بهذه المعلومة من أجلك.")
     except Exception as e:
-        logger.error(f"Draw error: {e}")
-        await message.edit_text(f"💔 حدث خطأ أثناء محاولتي للرسم، {user_name}.")
+        logger.error(f"Memory parsing error: {e}")
+        await message.edit_text("😥 آسفة، لم أفهم المعلومة جيداً. هل يمكنك أن تقولها بطريقة أبسط؟ مثلاً: 'تذكري أن لوني المفضل هو الأزرق'.")
+
 
 # --- معالج الأزرار ---
 
@@ -278,115 +325,63 @@ async def button_handler(update: Update, context: CallbackContext):
     data = query.data
     user_name = get_user_data(user_id).get('name', 'صديقي')
 
+    # التنقل بين القوائم
     if data == "back_to_main":
         await query.edit_message_text(f"🌸 أهلاً بعودتك، {user_name}!", reply_markup=get_main_keyboard())
-    elif data == "organization_menu":
-        await query.edit_message_text("هنا يمكننا تنظيم مهامك اليومية. 📋", reply_markup=get_organization_keyboard())
+    elif data == "activities_menu":
+        await query.edit_message_text("ماذا نود أن نفعل معاً؟ 🥰", reply_markup=get_activities_keyboard())
     elif data == "advanced_menu":
         await query.edit_message_text("هذه هي قدراتي الخاصة لمساعدتك. 🧠", reply_markup=get_advanced_keyboard())
+    elif data == "journal_menu":
+        await query.edit_message_text("هذه يومياتنا السرية. مكان آمن لمشاعرك وأفكارك. 📓", reply_markup=get_journal_keyboard())
+
+    # الأوامر
     elif data == "get_image":
         await context.bot.send_photo(chat_id=query.message.chat_id, photo=random.choice(MAHIRU_IMAGES), caption=f"🌸 تفضل، {user_name}! 💕")
-    elif data == "daily_summary":
-        await handle_daily_summary(query, context)
-    elif data == "todo_menu":
-        await show_todo_list(query, context, is_query=True)
-    elif data.startswith("toggle_task_"):
-        task_index = int(data.split('_')[2])
-        tasks = get_user_data(user_id).get('tasks', [])
-        if 0 <= task_index < len(tasks):
-            tasks[task_index]['done'] = not tasks[task_index]['done']
-            user_data[user_id]['tasks'] = tasks
-            save_user_data(user_data)
-            await show_todo_list(query, context, is_query=True)
-    elif data == "prompt_task":
-        set_user_state(user_id, 'awaiting_task')
-        await query.edit_message_text("📝 حسناً، اكتب نص المهمة التي تريد إضافتها:")
+    elif data == "start_chat":
+        await query.edit_message_text("أنا أستمع... 😊")
+    
+    # أوامر التوجيه
     elif data == "prompt_search":
         set_user_state(user_id, 'awaiting_search_query')
         await query.edit_message_text("🌐 بالتأكيد. اكتب ما تريدني أن أبحث عنه.")
     elif data == "prompt_write":
         set_user_state(user_id, 'awaiting_write_prompt')
         await query.edit_message_text("✍️ يسعدني المساعدة. ما هو موضوع الكتابة؟")
-    elif data == "prompt_draw":
-        set_user_state(user_id, 'awaiting_draw_prompt')
-        await query.edit_message_text("🖼️ فكرة رائعة! صف لي ماذا تريد أن أرسم.")
-
-# --- دوال الميزات المساعدة ---
-
-async def handle_daily_summary(query: Update, context: CallbackContext):
-    user_id = str(query.from_user.id)
-    user_name = get_user_data(user_id).get('name')
-    today = str(date.today())
+    elif data == "prompt_journal":
+        set_user_state(user_id, 'awaiting_journal_entry')
+        await query.edit_message_text("اكتب ما يجول في خاطرك... أنا هنا لأستمع. 📝")
+    elif data == "prompt_remember":
+        set_user_state(user_id, 'awaiting_memory')
+        await query.edit_message_text("بالتأكيد! ما هو الشيء الذي تريدني أن أتذكره لك؟ 💡")
     
-    weather_text = ""
-    if WEATHER_API_KEY:
-        try:
-            url = f"http://api.openweathermap.org/data/2.5/weather?q=Riyadh&appid={WEATHER_API_KEY}&units=metric&lang=ar"
-            response = requests.get(url).json()
-            if response.get('cod') == 200:
-                weather_text = f"الطقس اليوم: {response['weather'][0]['description']} مع درجة حرارة حوالي {int(response['main']['temp'])}°م. 🌤️"
-        except Exception as e:
-            logger.warning(f"Could not fetch weather: {e}")
-
-    tasks = get_user_data(user_id).get('tasks', [])
-    first_undone_task = next((task['text'] for task in tasks if not task['done']), None)
-    task_text = f"أهم مهمة لديك اليوم هي: '{first_undone_task}'. لا تنسها! 📝" if first_undone_task else "قائمة مهامك فارغة. يوم هادئ! 🍵"
-    
-    last_check_in = get_user_data(user_id).get('last_check_in')
-    streak = get_user_data(user_id).get('check_in_streak', 0)
-    if last_check_in != today:
-        yesterday = str(date.today() - timedelta(days=1))
-        streak = streak + 1 if last_check_in == yesterday else 1
-        user_data[user_id]['last_check_in'] = today
-        user_data[user_id]['check_in_streak'] = streak
-        save_user_data(user_data)
-    
-    summary = f"☀️ صباح الخير، {user_name}! تم تسجيل دخولك لليوم الـ {streak} على التوالي.\n\n{weather_text}\n{task_text}"
-    await query.edit_message_text(summary, reply_markup=get_main_keyboard())
-
-async def show_todo_list(update: Update, context: CallbackContext, is_query=False):
-    user_id = str(update.effective_user.id)
-    tasks = get_user_data(user_id).get('tasks', [])
-    text = f"📋 قائمة مهامك، {get_user_data(user_id).get('name')}:\n"
-    if not tasks:
-        text += "\nلا توجد مهام بعد."
-    
-    keyboard_buttons = []
-    for i, task in enumerate(tasks):
-        status_icon = "✅" if task['done'] else "☑️"
-        keyboard_buttons.append([InlineKeyboardButton(f"{status_icon} {task['text']}", callback_data=f"toggle_task_{i}")])
-    
-    keyboard_buttons.append([InlineKeyboardButton("➕ إضافة مهمة", callback_data="prompt_task")])
-    keyboard_buttons.append([InlineKeyboardButton("🔙 عودة", callback_data="organization_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard_buttons)
-
-    try:
-        if is_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    # عرض اليوميات
+    elif data == "view_journal":
+        journal = get_user_data(user_id).get('journal', [])
+        if not journal:
+            await query.edit_message_text("لم نكتب أي شيء في يومياتنا بعد. هيا نبدأ اليوم!", reply_markup=get_journal_keyboard())
         else:
-            await update.message.reply_text(text, reply_markup=reply_markup)
-    except BadRequest as e:
-        if "Message is not modified" in str(e):
-            pass
-        else:
-            logger.error(f"Error updating To-Do list: {e}")
+            # عرض آخر 3 تدوينات
+            text = "آخر ما كتبناه في يومياتنا:\n\n"
+            for entry in journal[-3:]:
+                text += f"🗓️ **{entry['date']}**\n- {entry['entry']}\n\n"
+            await query.edit_message_text(text, reply_markup=get_journal_keyboard())
+
 
 # --- تشغيل البوت ---
 def main():
-    if not TELEGRAM_TOKEN:
-        logger.critical("خطأ فادح: متغير البيئة TELEGRAM_TOKEN مطلوب.")
-        return
-    if not GEMINI_API_KEY:
-        logger.critical("خطأ فادح: متغير البيئة GEMINI_API_KEY مطلوب.")
+    if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+        logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
         return
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🌸 Mahiro (Fixed Version) is running!")
+    logger.info("🌸 Mahiro (The Ultimate Companion) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
