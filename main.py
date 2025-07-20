@@ -453,4 +453,49 @@ async def toggle_task(query, context, task_index):
 async def clear_completed(query, context):
     user_id = str(query.from_user.id)
     user_data[user_id]['tasks'] = [task for task in user_data[user_id]['tasks'] if not task['done']]
-  
+    save_user_data(user_data)
+    await query.edit_message_text("🗑️ تم حذف جميع المهام المكتملة.", reply_markup=get_todo_keyboard(user_id))
+
+# --- دوال متتبع المزاج ---
+async def show_mood_menu(query, context):
+    await query.edit_message_text(f"😊 كيف تشعر اليوم، {get_user_name(query.from_user.id)}؟", reply_markup=get_mood_keyboard())
+
+async def log_mood(query, context, mood):
+    user_id = str(query.from_user.id)
+    today = str(date.today())
+    
+    # Remove today's mood if it exists to avoid duplicates
+    user_data[user_id]['moods'] = [m for m in user_data[user_id].get('moods', []) if m['date'] != today]
+    
+    user_data[user_id]['moods'].append({"mood": mood, "date": today})
+    save_user_data(user_data)
+    await query.edit_message_text(f"شكراً لمشاركتي شعورك، {get_user_name(user_id)}! 💕 تم تسجيل أنك تشعر {mood} اليوم.", reply_markup=get_mood_keyboard())
+
+async def view_mood_history(query, context):
+    user_id = str(query.from_user.id)
+    moods = user_data.get(user_id, {}).get('moods', [])
+    text = f"📊 سجل مزاجك يا {get_user_name(user_id)}:\n\n"
+    if not moods:
+        text += "لا يوجد سجل للمزاج بعد."
+    else:
+        # Show last 7 entries
+        for record in moods[-7:]:
+            text += f"- {record['date']}: {record['mood']}\n"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 عودة", callback_data="mood_menu")]]))
+
+
+# --- تشغيل البوت ---
+def main():
+    """Start the bot."""
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("🌸 Mahiro bot is running with all new features!")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
+
