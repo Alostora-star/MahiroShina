@@ -43,11 +43,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- إعداد الذكاء الاصطناعي (Gemini 1.5 Pro) ---
+# --- إعداد الذكاء الاصطناعي (Gemini 2.5 Pro) ---
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
     else:
         model = None
         logger.warning("متغير البيئة GEMINI_API_KEY غير موجود.")
