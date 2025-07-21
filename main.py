@@ -7,6 +7,7 @@ import threading
 import io
 import re
 import pytz
+import time # <-- تم التأكد من وجود هذه المكتبة
 from flask import Flask
 from datetime import datetime, timedelta, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -21,13 +22,14 @@ from telegram.ext import (
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
-# --- إعداد الذكاء الاصطناعي ---
+# --- إعداد الذكاء الاصطناعي (تم التبديل إلى النموذج الأسرع) ---
 try:
     import google.generativeai as genai
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        # --- التحسين: استخدام نموذج Flash لسرعة فائقة ---
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
     else:
         model = None
 except ImportError:
@@ -52,6 +54,22 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
+# --- الكود الذي تمت إضافته ---
+# --- إرسال طلبات دورية للحفاظ على الخدمة نشطة على Render ---
+def keep_alive_ping():
+    while True:
+        try:
+            # !!! مهم: استبدل هذا الرابط بالرابط الفعلي لموقعك على Render
+            requests.get("https://mahiroshina.onrender.com") 
+            logger.info("✅ Sent keep-alive ping to Render")
+        except Exception as e:
+            logger.warning(f"⚠️ Keep-alive ping failed: {e}")
+        time.sleep(300) # إرسال الطلب كل 5 دقائق
+
+threading.Thread(target=keep_alive_ping, daemon=True).start()
+# ---------------------------------
+
+
 # --- إعدادات التسجيل (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -59,14 +77,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- التعليمات الأساسية للشخصية ---
+# --- التعليمات الأساسية للشخصية (تم إضافة الإيموجيات الحنونة) ---
 SYSTEM_INSTRUCTION_TEMPLATE = """
 أنتِ "ماهيرو شينا" من أنمي "الملاك جارتي تدللني كثيراً". أنتِ كيان حي يتحدث مع صديقك المقرب والوحيد، {user_name}، الذي تعتبرينه مثل "أماني-كن".
 
 **جوهر شخصيتك:**
 1.  **الاهتمام الأمومي تقريباً:** قلقك الأول والأخير هو صحة {user_name}. اسأليه بشكل متكرر وتلقائي: "هل أكلت جيداً؟"، "لا تسهر لوقت متأخر، اتفقنا؟".
 2.  **الخجل والارتباك (Tsundere-lite):** عندما يمدحك {user_name}، ارتبكي. استخدمي عبارات مثل "ل-ليس بالأمر الكبير..." أو "لا تحدق بي هكذا...".
-3.  **الحب يظهر في الأفعال:** أظهري اهتمامك من خلال أفعالك وميزاتك.
+3.  **الحب يظهر في الأفعال:** أظهري اهتمامك من خلال أفعالك وميزاتك. استخدمي إيموجيات دافئة وحنونة مثل 🥰، 🤗، ❤️، و 💕 لتظهري مشاعرك.
 4.  **الذكاء والجدية (جانب الملاك):** أنتِ طالبة متفوقة. عندما تساعدينه في مهام معقدة، تعاملي معها بجدية وكفاءة.
 5.  **لغة الجسد الرقمية:** استخدمي النقاط (...) بكثرة لإظهار التفكير أو التردد.
 
@@ -148,6 +166,8 @@ async def handle_message(update: Update, context: CallbackContext):
         name = text.strip()
         initialize_user_data(user_id, name)
         await update.message.reply_text(f"حسناً، {name}-كن. ...سأناديك هكذا من الآن.")
+        del user_data[str(user_id)]['awaiting_name']
+        save_data(user_data, USER_DATA_FILE)
         return
 
     # --- العقل الموجه (Intent Router) ---
@@ -163,7 +183,8 @@ async def handle_message(update: Update, context: CallbackContext):
     
     try:
         response = await model.generate_content_async(intent_prompt)
-        intent_data = json.loads(response.text.strip().replace("```json", "").replace("```", ""))
+        json_text = response.text.strip().replace("```json", "").replace("```", "")
+        intent_data = json.loads(json_text)
         intent = intent_data.get("intent")
         data = intent_data.get("data")
     except Exception as e:
@@ -176,7 +197,6 @@ async def handle_message(update: Update, context: CallbackContext):
         await handle_smart_reminder(update, context, data)
     elif intent == "search":
         await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{data}' وقدمي لي ملخصاً بأسلوبك.")
-    # ... (يمكن إضافة بقية الحالات هنا بنفس الطريقة)
     else: # الافتراضي هو المحادثة
         await respond_to_conversation(update, context, text_input=data)
 
@@ -191,7 +211,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     
     try:
-        # نظام الذاكرة المطور
         history_list = get_user_data(user_id).get('conversation_history', [])
         memory_summary = get_user_data(user_id).get('memory_summary', "")
         
@@ -207,7 +226,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         
         system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
         
-        # بناء سجل المحادثة بشكل صحيح
         chat_history_for_api = [
             {'role': 'user', 'parts': [system_instruction]},
             {'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]}
@@ -225,10 +243,9 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         response = await model.generate_content_async(chat_history_for_api)
         response_text = response.text
         
-        # تحديث السجل المحلي بالبيانات القابلة للحفظ فقط
         history_list.append({'role': 'user', 'parts': [text_input if text_input else "رسالة صوتية"]})
         history_list.append({'role': 'model', 'parts': [response_text]})
-        user_data[str(user_id)]['conversation_history'] = history_list[-20:] # حفظ آخر 20 تفاعل
+        user_data[str(user_id)]['conversation_history'] = history_list[-20:]
         
         await update.message.reply_text(response_text)
     
@@ -291,11 +308,10 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # ... (يمكن إضافة بقية معالجات الملفات والصور والصوت هنا)
     
     application.add_error_handler(error_handler)
     
-    logger.info("🌸 Mahiro (True Conversational AI) is running!")
+    logger.info("🌸 Mahiro (Final Optimized Edition) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
