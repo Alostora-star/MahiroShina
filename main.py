@@ -42,6 +42,7 @@ except Exception as e:
 
 # --- إعدادات البيئة والواجهات البرمجية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # --- إعداد Flask للبقاء نشطاً ---
 flask_app = Flask(__name__)
