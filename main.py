@@ -23,6 +23,10 @@ from telegram.constants import ChatAction
 # --- إعداد الذكاء الاصطناعي (تم التبديل إلى النموذج الأسرع) ---
 try:
     import google.generativeai as genai
+    # --- مكتبات إضافية لتلخيص الروابط ---
+    import bs4
+    import requests as web_requests
+    
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
@@ -31,7 +35,7 @@ try:
         model = None
 except ImportError:
     model = None
-    logging.warning("مكتبة google.generativeai غير مثبتة.")
+    logging.warning("مكتبة google.generativeai أو beautifulsoup4 غير مثبتة.")
 except Exception as e:
     model = None
     logging.critical(f"فشل في إعداد Gemini API: {e}")
@@ -110,8 +114,9 @@ def initialize_user_data(user_id, name):
     user_data[user_id_str] = {
         'name': name,
         'timezone': 'Asia/Riyadh',
+        'shopping_list': [],
+        'language_mode': 'default', # 'default' or language name
         'conversation_history': [], 'memory_summary': ""
-        # ... (يمكن إضافة بقية هياكل البيانات للميزات هنا عند الحاجة)
     }
     save_data(user_data, USER_DATA_FILE)
 
@@ -134,11 +139,10 @@ async def help_command(update: Update, context: CallbackContext):
     فقط اطلب ما تريد! إليك بعض الأمثلة:
     - "ابحثي عن أفضل وصفات الأرز"
     - "ذكريني بالاتصال بوالدتي غداً الساعة 5 مساءً"
-    - "تذكري أن لوني المفضل هو الأزرق"
-    - "لنسجل هذا المصروف: 50 ريالاً على الغداء"
-    - "لعبة 20 سؤالاً"
+    - "أضيفي الحليب إلى قائمة التسوق"
     - "لخصي لي هذا الرابط: [رابط]"
-    - "ساعديني في اتخاذ قرار بين هاتف X وهاتف Y"
+    - "لنتحدث بالإنجليزية"
+    - "ساعديني في تصحيح هذا الكود: [الكود]"
 
     لضبط منطقتك الزمنية للحصول على تذكيرات دقيقة، استخدم الأمر /settings
     أنا هنا لأساعدك وأكون صديقتك. 🌸
@@ -154,7 +158,6 @@ async def settings_command(update: Update, context: CallbackContext):
             f"منطقتك الزمنية الحالية هي: {user_tz}.\n"
             "لتغييرها، استخدم الأمر هكذا:\n"
             "/settings Europe/Berlin\n"
-            "يمكنك إيجاد قائمة المناطق الزمنية على ويكيبيديا."
         )
         return
     
@@ -164,7 +167,7 @@ async def settings_command(update: Update, context: CallbackContext):
         save_data(user_data, USER_DATA_FILE)
         await update.message.reply_text(f"حسناً... لقد قمت بتحديث منطقتك الزمنية إلى {new_tz}. 💕")
     except pytz.UnknownTimeZoneError:
-        await update.message.reply_text("...آسفة، لم أتعرف على هذه المنطقة الزمنية. تأكد من كتابتها بشكل صحيح (مثال: Africa/Cairo).")
+        await update.message.reply_text("...آسفة، لم أتعرف على هذه المنطقة الزمنية.")
 
 async def handle_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
@@ -181,11 +184,17 @@ async def handle_message(update: Update, context: CallbackContext):
     intent_prompt = f"""
     حلل الرسالة التالية من المستخدم: '{text}'.
     حدد "قصد" المستخدم من بين الخيارات التالية:
-    [conversation, search, reminder, remember_fact, financial_entry, dream_entry, start_game_20q, start_story, get_news, get_meal_plan, start_workout, start_meditation, summarize_link, debug_code, make_decision, set_vibe, find_gift, add_to_shopping_list, add_goal]
+    [conversation, search, reminder, remember_fact, add_to_shopping_list, view_shopping_list, start_workout, start_meditation, summarize_link, debug_code, set_language_mode]
     
-    أرجع الرد فقط على شكل JSON صالح للاستخدام البرمجي: {{\"intent\": \"اسم_القصد\", \"data\": \"البيانات_المستخرجة_من_النص\"}}.
-    مثلاً، إذا كانت الرسالة "ذكريني بشرب الماء بعد ساعة"، يجب أن يكون الرد: {{\"intent\": \"reminder\", \"data\": \"شرب الماء بعد ساعة\"}}.
-    إذا كانت محادثة عادية، أرجع: {{\"intent\": \"conversation\", \"data\": \"{text}\"}}.
+    أرجع الرد فقط على شكل JSON: {{\"intent\": \"اسم_القصد\", \"data\": \"البيانات_المستخرجة\"}}.
+    أمثلة:
+    "ذكريني بشرب الماء بعد ساعة" -> {{\"intent\": \"reminder\", \"data\": \"شرب الماء بعد ساعة\"}}
+    "أضيفي الخبز والحليب للقائمة" -> {{\"intent\": \"add_to_shopping_list\", \"data\": \"الخبز والحليب\"}}
+    "اعرضي لي قائمة التسوق" -> {{\"intent\": \"view_shopping_list\", \"data\": \"\"}}
+    "لنتحدث بالإنجليزية" -> {{\"intent\": \"set_language_mode\", \"data\": \"English\"}}
+    "لخصي هذا الرابط: http..." -> {{\"intent\": \"summarize_link\", \"data\": \"http...\"}}
+    "ساعديني في تصحيح هذا الكود: def hello()..." -> {{\"intent\": \"debug_code\", \"data\": \"def hello()...\"}}
+    "محادثة عادية" -> {{\"intent\": \"conversation\", \"data\": \"{text}\"}}
     """
     
     try:
@@ -200,13 +209,23 @@ async def handle_message(update: Update, context: CallbackContext):
         data = text
 
     # --- توجيه الطلب بناءً على القصد ---
-    if intent == "reminder":
-        await handle_smart_reminder(update, context, data)
-    elif intent == "search":
-        await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{data}' وقدمي لي ملخصاً بأسلوبك.")
-    # ... (يمكن إضافة بقية الحالات هنا بنفس الطريقة)
-    else: # الافتراضي هو المحادثة
+    action_map = {
+        "reminder": handle_smart_reminder,
+        "search": lambda u, c, d: respond_to_conversation(u, c, text_input=f"ابحثي لي في الإنترنت عن '{d}' وقدمي لي ملخصاً."),
+        "add_to_shopping_list": handle_shopping_list,
+        "view_shopping_list": lambda u, c, d: handle_shopping_list(u, c, view=True),
+        "start_workout": handle_workout_partner,
+        "start_meditation": handle_meditation_guide,
+        "summarize_link": handle_link_summarization,
+        "debug_code": handle_code_debugging,
+        "set_language_mode": handle_language_partner,
+    }
+
+    if intent in action_map:
+        await action_map[intent](update, context, data)
+    else:
         await respond_to_conversation(update, context, text_input=data)
+
 
 async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     user_id = str(update.effective_user.id)
@@ -235,6 +254,11 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         
         system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
         
+        # التحقق من وضع اللغة
+        language_mode = get_user_data(user_id).get('language_mode', 'default')
+        if language_mode != 'default':
+            system_instruction += f"\n\nقاعدة إضافية: يجب أن تكون كل ردودك باللغة {language_mode} فقط. صحح أخطاء المستخدم بلطف."
+
         chat_history_for_api = [
             {'role': 'user', 'parts': [system_instruction]},
             {'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]}
@@ -252,7 +276,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         response = await model.generate_content_async(chat_history_for_api)
         response_text = response.text
         
-        # تحديث السجل المحلي بالبيانات القابلة للحفظ فقط
         history_list.append({'role': 'user', 'parts': [text_input if text_input else "رسالة صوتية"]})
         history_list.append({'role': 'model', 'parts': [response_text]})
         user_data[str(user_id)]['conversation_history'] = history_list[-20:]
@@ -264,6 +287,65 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         await update.message.reply_text(f"...آسفة {user_name}-كن، عقلي مشوش قليلاً الآن.")
     finally:
         save_data(user_data, USER_DATA_FILE)
+
+# --- دوال الميزات الجديدة ---
+
+async def handle_shopping_list(update: Update, context: CallbackContext, data: str = "", view: bool = False):
+    user_id = str(update.effective_user.id)
+    shopping_list = get_user_data(user_id).get('shopping_list', [])
+    
+    if view:
+        if not shopping_list:
+            await update.message.reply_text("...قائمة التسوق فارغة حالياً.")
+        else:
+            list_text = "هذه هي قائمة التسوق الخاصة بك:\n\n"
+            for item in shopping_list:
+                list_text += f"- {item}\n"
+            await update.message.reply_text(list_text)
+        return
+
+    items = [item.strip() for item in data.split('و')]
+    shopping_list.extend(items)
+    user_data[user_id]['shopping_list'] = list(set(shopping_list)) # إزالة التكرار
+    save_data(user_data, USER_DATA_FILE)
+    await update.message.reply_text(f"حسناً، أضفت '{data}' إلى قائمة التسوق. 🥰")
+
+async def workout_callback(context: CallbackContext):
+    job = context.job
+    await context.bot.send_message(chat_id=job.chat_id, text=f"🎉 لقد انتهى وقت التمرين، {job.data['user_name']}-كن! عمل رائع! أنت قوي جداً. 💪")
+
+async def handle_workout_partner(update: Update, context: CallbackContext, data: str = ""):
+    user_id = str(update.effective_user.id)
+    user_name = get_user_data(user_id).get('name', 'أماني-كن')
+    await update.message.reply_text("حسناً! لنبدأ جلسة تمرين لمدة 30 دقيقة. سأخبرك عندما ينتهي الوقت. ابذل قصارى جهدك! ❤️")
+    context.job_queue.run_once(workout_callback, 30 * 60, chat_id=user_id, name=f"workout_{user_id}", data={'user_name': user_name})
+
+async def handle_meditation_guide(update: Update, context: CallbackContext, data: str = ""):
+    await update.message.reply_text("بالتأكيد. أوجد مكاناً هادئاً... أغمض عينيك... وركز على تنفسك. شهيق عميق... ثم زفير بطيء... دع كل الأفكار تذهب... أنت هنا الآن، في هذه اللحظة الهادئة. 🧘‍♀️")
+
+async def handle_link_summarization(update: Update, context: CallbackContext, data: str):
+    await update.message.reply_text("حسناً، سألقي نظرة على هذا الرابط...")
+    try:
+        response = web_requests.get(data, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = bs4.BeautifulSoup(response.text, 'html.parser')
+        page_text = ' '.join(p.get_text() for p in soup.find_all('p'))[:4000] # أخذ أول 4000 حرف
+        await respond_to_conversation(update, context, text_input=f"لخصي لي النص التالي من مقال على الإنترنت: {page_text}")
+    except Exception as e:
+        logger.error(f"Link summarization error: {e}")
+        await update.message.reply_text("...آسفة، لم أستطع قراءة محتوى هذا الرابط.")
+
+async def handle_code_debugging(update: Update, context: CallbackContext, data: str):
+    await respond_to_conversation(update, context, text_input=f"صديقي أرسل لي هذا الكود ويحتاج للمساعدة في تصحيحه. حللي الكود، ابحثي عن الأخطاء، وقدمي النسخة المصححة مع شرح لطيف وبسيط للخطأ:\n```\n{data}\n```")
+
+async def handle_language_partner(update: Update, context: CallbackContext, data: str):
+    user_id = str(update.effective_user.id)
+    if data.lower() in ['default', 'arabic', 'عربية']:
+        user_data[user_id]['language_mode'] = 'default'
+        await update.message.reply_text("حسناً، لقد عدنا للحديث باللغة العربية. 😊")
+    else:
+        user_data[user_id]['language_mode'] = data
+        await respond_to_conversation(update, context, text_input=f"Okay, I will now speak in {data}. Let's practice together!")
+    save_data(user_data, USER_DATA_FILE)
 
 # --- نظام التذكيرات ---
 async def reminder_callback(context: CallbackContext):
@@ -326,7 +408,7 @@ def main():
     
     application.add_error_handler(error_handler)
     
-    logger.info("🌸 Mahiro (The Final, Stable & Optimized Edition) is running!")
+    logger.info("🌸 Mahiro (Real World Integration Edition) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
