@@ -1,5 +1,6 @@
 python-telegram-bot
-requests
-pytz
 google-generativeai
+beautifulsoup4
+requests
 flask
+pytz
