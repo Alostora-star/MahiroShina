@@ -13,34 +13,31 @@ import json
 import threading
 from flask import Flask
 from datetime import datetime
-import pytz  # <-- تم إضافة المكتبة الناقصة
+import pytz
 
+# --- إعداد المتغيرات البيئية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 WEATHER_API_KEY = os.getenv('WEATHER_API_KEY')
 
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
+# --- إعداد Flask لإبقاء البوت نشطاً ---
 flask_app = Flask(__name__)
 
-# المسار الرئيسي للتحقق من حالة الخدمة
 @flask_app.route("/")
 def home():
     return "✅ Bot is running and alive!"
 
-# تشغيل Flask على المنفذ الذي تحدده Render
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# بدء السيرفر في Thread منفصل
 threading.Thread(target=run_flask).start()
 
-# إرسال طلبات ping دورية للحفاظ على الخدمة نشطة
 def keep_alive_ping():
     while True:
         try:
             # تأكد من تغيير الرابط ليتوافق مع رابط خدمتك على Render
+            # مثال: https://your-app-name.onrender.com
             requests.get("https://mahiroshina.onrender.com") 
             print("✅ Sent keep-alive ping to Render")
         except Exception as e:
@@ -49,6 +46,7 @@ def keep_alive_ping():
 
 threading.Thread(target=keep_alive_ping, daemon=True).start()
 
+# --- إعداد التسجيل (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -57,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 # --- إعداد الذكاء الاصطناعي (شخصية ماهيرو) ---
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash') # تم التحديث إلى النموذج الأحدث
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 SYSTEM_INSTRUCTION = """
 أنتِ الآن "ماهيرو شينا" من أنمي "الملاك جارتي تدللني كثيراً".
@@ -70,60 +68,51 @@ SYSTEM_INSTRUCTION = """
 لا تضعي أقواس أو تصفي أفعالك الجسدية.
 """
 
-# --- صور ماهيرو شينا المحدثة ---
+# --- البيانات الثابتة (صور، أغاني، رسائل) ---
 MAHIRU_IMAGES = [
     "https://i.imgur.com/K8J9X2M.jpg", "https://i.imgur.com/L3M4N5P.jpg", 
     "https://i.imgur.com/Q6R7S8T.jpg", "https://i.imgur.com/U9V0W1X.jpg",
     "https://i.imgur.com/Y2Z3A4B.jpg", "https://i.imgur.com/C5D6E7F.jpg",
     "https://i.imgur.com/G8H9I0J.jpg", "https://i.imgur.com/K1L2M3N.jpg"
 ]
-
-# --- قاعدة بيانات الأغاني مع الملفات الصوتية ---
 SONGS_DATABASE = {
     "believer": {"url": "https://www.youtube.com/watch?v=7wtfhZwyrcc", "audio": "https://www.soundjay.com/misc/sounds/bell-ringing-05.wav"},
     "imagine dragons": {"url": "https://www.youtube.com/watch?v=7wtfhZwyrcc", "audio": "https://www.soundjay.com/misc/sounds/bell-ringing-05.wav"},
     "shape of you": {"url": "https://www.youtube.com/watch?v=JGwWNGJdvx8", "audio": "https://www.soundjay.com/misc/sounds/bell-ringing-05.wav"},
-    "bad habits": {"url": "https://www.youtube.com/watch?v=orJSJGHjBLI", "audio": "https://www.soundjay.com/misc/sounds/bell-ringing-05.wav"},
-    "blinding lights": {"url": "https://www.youtube.com/watch?v=4NRXx6U8ABQ", "audio": "https://www.soundjay.com/misc/sounds/bell-ringing-05.wav"}
 }
-
-# --- رسائل عشوائية من ماهيرو ---
 RANDOM_MESSAGES = [
     "{user_name}، هل تذكرت أن تشرب الماء اليوم؟ 💧", "أفكر فيك، {user_name}. أتمنى أن تكون سعيداً! 😊",
     "هل تريد أن أحضر لك بعض الطعام، {user_name}؟ 🍱", "{user_name}، لا تنسَ أن تأخذ استراحة 💕",
     "أتمنى أن يكون يومك جميلاً، {user_name} 🌸", "هل تحتاج شيئاً، {user_name}؟ أنا هنا من أجلك 💖",
-    "ذكرني إذا نسيت شيئاً مهماً، {user_name} ⏰", "الجو جميل اليوم، {user_name}! هل تريد أن نخرج؟ 🌞",
-    "أحبك كثيراً، {user_name}! 💕", "هل تريد أن نستمع لموسيقى معاً؟ 🎵"
 ]
 
-# --- متغيرات لحفظ بيانات المستخدمين ---
+# --- إدارة بيانات المستخدمين والإحصائيات ---
 USER_DATA_FILE = "user_data.json"
+BOT_STATS_FILE = "bot_stats.json"
 
-def load_user_data():
+def load_json_file(filename, default_data):
     try:
-        with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return default_data
 
-def save_user_data(data):
-    with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+def save_json_file(filename, data):
+    with open(filename, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-user_data = load_user_data()
-# تهيئة إحصائيات البوت من ملف إذا كان موجوداً
-try:
-    with open("bot_stats.json", 'r') as f:
-        bot_stats = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    bot_stats = {"total_users": len(user_data), "total_messages": 0, "total_commands": 0}
+user_data = load_json_file(USER_DATA_FILE, {})
+bot_stats = load_json_file(BOT_STATS_FILE, {"total_users": len(user_data), "total_messages": 0, "total_commands": 0})
 
-def save_bot_stats():
-    with open("bot_stats.json", 'w') as f:
-        json.dump(bot_stats, f, indent=4)
+def update_bot_stats(stat_type):
+    global bot_stats
+    if stat_type == "message":
+        bot_stats["total_messages"] += 1
+    elif stat_type == "command":
+        bot_stats["total_commands"] += 1
+    save_json_file(BOT_STATS_FILE, bot_stats)
 
-# --- دوال البوت ---
-
+# --- دوال مساعدة خاصة ببيانات المستخدم ---
 def get_user_name(user_id):
     return user_data.get(str(user_id), {}).get('name', 'فوجيميا-سان')
 
@@ -132,61 +121,18 @@ def get_user_playlist(user_id):
 
 def add_song_to_playlist(user_id, song):
     user_id_str = str(user_id)
-    if user_id_str not in user_data:
-        user_data[user_id_str] = {}
-    if 'playlist' not in user_data[user_id_str]:
-        user_data[user_id_str]['playlist'] = []
-    user_data[user_id_str]['playlist'].append(song)
-    save_user_data(user_data)
-
-def remove_song_from_playlist(user_id, song_index):
-    user_id_str = str(user_id)
-    if user_id_str in user_data and 'playlist' in user_data[user_id_str]:
-        playlist = user_data[user_id_str]['playlist']
-        if 0 <= song_index < len(playlist):
-            removed_song = playlist.pop(song_index)
-            save_user_data(user_data)
-            return removed_song
-    return None
+    user_data.setdefault(user_id_str, {}).setdefault('playlist', []).append(song)
+    save_json_file(USER_DATA_FILE, user_data)
 
 def get_user_timezone(user_id):
     return user_data.get(str(user_id), {}).get('timezone', 'Asia/Riyadh')
 
 def set_user_timezone(user_id, timezone):
     user_id_str = str(user_id)
-    if user_id_str not in user_data:
-        user_data[user_id_str] = {}
-    user_data[user_id_str]['timezone'] = timezone
-    save_user_data(user_data)
+    user_data.setdefault(user_id_str, {})['timezone'] = timezone
+    save_json_file(USER_DATA_FILE, user_data)
 
-def update_bot_stats(stat_type):
-    global bot_stats
-    if stat_type == "message":
-        bot_stats["total_messages"] += 1
-    elif stat_type == "command":
-        bot_stats["total_commands"] += 1
-    save_bot_stats()
-
-# دالة الحصول على الطقس
-async def get_weather(city="Cairo"):
-    if not WEATHER_API_KEY:
-        return None
-    try:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ar"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return {
-            'temp': data['main']['temp'],
-            'description': data['weather'][0]['description'],
-            'humidity': data['main']['humidity'],
-            'city': city
-        }
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Weather API request failed: {e}")
-        return None
-
-# دوال إنشاء لوحات المفاتيح التفاعلية
+# --- دوال إنشاء لوحات المفاتيح (Keyboards) ---
 def get_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("🌸 صورة لماهيرو", callback_data="get_image")],
@@ -201,28 +147,22 @@ def get_games_keyboard():
     keyboard = [
         [InlineKeyboardButton("🔢 تخمين الرقم", callback_data="game_guess"), InlineKeyboardButton("🎯 لعبة الذاكرة", callback_data="game_memory")],
         [InlineKeyboardButton("❓ أسئلة وأجوبة", callback_data="game_quiz"), InlineKeyboardButton("🎲 رمي النرد", callback_data="game_dice")],
-        [InlineKeyboardButton("🎪 حجر ورقة مقص", callback_data="game_rps"), InlineKeyboardButton("🧩 ألغاز", callback_data="game_riddle")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ... (باقي دوال لوحات المفاتيح كما هي) ...
 def get_music_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🎵 عرض قائمتي", callback_data="show_playlist"),
-         InlineKeyboardButton("✏️ تعديل القائمة", callback_data="edit_playlist")],
-        [InlineKeyboardButton("🎧 أغنية عشوائية", callback_data="random_song"),
-         InlineKeyboardButton("🔍 بحث عن أغنية", callback_data="search_song")],
+        [InlineKeyboardButton("🎵 عرض قائمتي", callback_data="show_playlist")],
+        [InlineKeyboardButton("🎧 أغنية عشوائية", callback_data="random_song")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_reminders_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🍱 تذكير طعام", callback_data="food_reminder"),
-         InlineKeyboardButton("😴 تذكير نوم", callback_data="sleep_reminder")],
-        [InlineKeyboardButton("💧 تذكير شرب الماء", callback_data="water_reminder"),
-         InlineKeyboardButton("🏃‍♂️ تذكير رياضة", callback_data="exercise_reminder")],
+        [InlineKeyboardButton("🍱 تذكير طعام", callback_data="food_reminder"), InlineKeyboardButton("😴 تذكير نوم", callback_data="sleep_reminder")],
+        [InlineKeyboardButton("💧 تذكير ماء", callback_data="water_reminder"), InlineKeyboardButton("🏃‍♂️ تذكير رياضة", callback_data="exercise_reminder")],
         [InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -235,8 +175,8 @@ def get_settings_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# دالة الأمر /start
-async def start(update, context):
+# --- معالجات الأوامر والرسائل الأساسية ---
+async def start(update: Update, context: CallbackContext):
     user = update.effective_user
     user_id = str(user.id)
     update_bot_stats("command")
@@ -244,8 +184,8 @@ async def start(update, context):
     if user_id not in user_data:
         bot_stats["total_users"] += 1
         user_data[user_id] = {'waiting_for_name': True}
-        save_user_data(user_data)
-        save_bot_stats()
+        save_json_file(USER_DATA_FILE, user_data)
+        save_json_file(BOT_STATS_FILE, bot_stats)
         
         welcome_text = "🌸 مرحباً! أنا ماهيرو شينا!\n\nهذه هي المرة الأولى التي نتقابل فيها...\nما الاسم الذي تريدني أن أناديك به؟\n\nاكتب اسمك في الرسالة التالية من فضلك! 💕"
         await update.message.reply_text(welcome_text)
@@ -255,13 +195,11 @@ async def start(update, context):
     welcome_text = f"🌸 مرحباً بعودتك، {user_name}!\n\nأنا سعيدة جداً برؤيتك! 💕\nكيف حالك اليوم؟ هل تناولت طعامك؟ 🍱"
     await update.message.reply_text(welcome_text, reply_markup=get_main_keyboard())
 
-# دالة التعامل مع الرسائل النصية
-async def handle_message(update, context):
+async def handle_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     user_message = update.message.text
     update_bot_stats("message")
 
-    # --- التحقق من انتظار الاسم (مع معالجة الأخطاء) ---
     if user_data.get(user_id, {}).get('waiting_for_name'):
         try:
             name = user_message.strip()
@@ -273,7 +211,7 @@ async def handle_message(update, context):
             user_data[user_id]['waiting_for_name'] = False
             user_data[user_id].setdefault('playlist', [])
             user_data[user_id].setdefault('timezone', 'Asia/Riyadh')
-            save_user_data(user_data)
+            save_json_file(USER_DATA_FILE, user_data)
 
             response = f"🌸 أهلاً وسهلاً، {name}!\n\nاسم جميل جداً! 💕\nمن الآن سأناديك {name}.\nأتمنى أن نصبح أصدقاء مقربين!\nهيا لنبدأ! يمكنك استخدام الأزرار أدناه 👇"
             await update.message.reply_text(response, reply_markup=get_main_keyboard())
@@ -284,27 +222,7 @@ async def handle_message(update, context):
             return
 
     user_name = get_user_name(user_id)
-    user_message_lower = user_message.lower()
-
-    # التحقق من طلبات الأوامر النصية
-    if any(keyword in user_message_lower for keyword in ["الأزرار", "القائمة", "buttons"]):
-        await update.message.reply_text(f"🌸 تفضل {user_name}، هذه هي القائمة الرئيسية:", reply_markup=get_main_keyboard())
-        return
-    if any(keyword in user_message_lower for keyword in ["صورة", "صورتك"]):
-        await send_mahiru_image_direct(update, context)
-        return
-    if any(keyword in user_message_lower for keyword in ["أغنية", "موسيقى"]):
-        await handle_song_request(update, context, user_message)
-        return
-
-    # التحقق من الألعاب النشطة
-    if user_data.get(user_id, {}).get('game'):
-        game_type = user_data[user_id]['game']['type']
-        if game_type == 'guess':
-            await handle_guess_game(update, context)
-            return
-        # ... (أضف باقي الألعاب هنا)
-
+    
     # التعامل مع الرسائل العادية باستخدام الذكاء الاصطناعي
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -315,10 +233,77 @@ async def handle_message(update, context):
         logger.error(f"Error in Gemini API call: {e}")
         await update.message.reply_text(f"💔 آسفة {user_name}، حدث خطأ. هل يمكنك المحاولة مرة أخرى؟ 😔")
 
-# ... (باقي دوال البوت مثل handle_song_request, send_mahiru_image_direct, handle_guess_game, etc.) ...
-# يجب التأكد من أن جميع الدوال تستخدم logger.error لتسجيل الأخطاء
+# --- معالج الأزرار (CallbackQueryHandler) ---
+async def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(query.from_user.id)
+    user_name = get_user_name(user_id)
+    data = query.data
 
-# --- مثال على تعديل دالة الطقس لاستخدام pytz ---
+    # القائمة الرئيسية
+    if data == "back_to_main":
+        await query.edit_message_text(f"🌸 أهلاً بعودتك {user_name}! ماذا تريد أن نفعل الآن؟", reply_markup=get_main_keyboard())
+    elif data == "get_image":
+        await send_mahiru_image(query, context)
+    elif data == "random_message":
+        message = random.choice(RANDOM_MESSAGES).format(user_name=user_name)
+        await query.edit_message_text(f"💭 رسالة خاصة لك!\n\n{message}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]]))
+    
+    # القوائم الفرعية
+    elif data == "games_menu":
+        await query.edit_message_text(f"🎮 اختر لعبتك المفضلة، {user_name}!", reply_markup=get_games_keyboard())
+    elif data == "music_menu":
+        await query.edit_message_text(f"🎶 أهلاً بك في عالم الموسيقى، {user_name}!", reply_markup=get_music_keyboard())
+    elif data == "reminders_menu":
+        await query.edit_message_text(f"⏰ {user_name}، أريد أن أعتني بك! اختر تذكيراً.", reply_markup=get_reminders_keyboard())
+    elif data == "settings_menu":
+        await query.edit_message_text(f"⚙️ إعدادات البوت. المنطقة الزمنية الحالية: {get_user_timezone(user_id)}", reply_markup=get_settings_keyboard())
+
+    # الإحصائيات والطقس
+    elif data == "bot_stats":
+        stats_text = f"""📊 إحصائيات البوت 📊
+        👥 إجمالي المستخدمين: {bot_stats["total_users"]}
+        💬 إجمالي الرسائل: {bot_stats["total_messages"]}
+        🎯 إجمالي الأوامر: {bot_stats["total_commands"]}"""
+        await query.edit_message_text(stats_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]]))
+    elif data == "weather_info":
+        await show_weather_info(query, context)
+
+    # دوال الموسيقى
+    elif data == "show_playlist":
+        playlist = get_user_playlist(user_id)
+        if not playlist:
+            message = f"🎵 قائمة التشغيل فارغة يا {user_name}."
+        else:
+            message = f"🎶 قائمة {user_name} الموسيقية:\n" + "\n".join([f"{i+1}. {song}" for i, song in enumerate(playlist)])
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 عودة", callback_data="music_menu")]]))
+    elif data == "random_song":
+        song_key = random.choice(list(SONGS_DATABASE.keys()))
+        song_data = SONGS_DATABASE[song_key]
+        add_song_to_playlist(user_id, song_key)
+        await query.edit_message_text(f"🎧 اخترت لك: {song_key}\n🔗 {song_data['url']}", reply_markup=get_music_keyboard())
+
+    # دوال الألعاب
+    elif data == "game_dice":
+        result = random.randint(1, 6)
+        await query.edit_message_text(f"🎲 لقد رميت النرد والنتيجة هي: {result}", reply_markup=get_games_keyboard())
+
+# --- دوال مساعدة لمعالج الأزرار ---
+async def send_mahiru_image(query, context):
+    user_name = get_user_name(query.from_user.id)
+    try:
+        image_url = random.choice(MAHIRU_IMAGES)
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=image_url,
+            caption=f"🌸 هذه صورتي، {user_name}!\nأتمنى أن تعجبك! 💕"
+        )
+    except Exception as e:
+        logger.error(f"Failed to send photo: {e}")
+        await query.message.reply_text(f"💔 آسفة {user_name}، لا أستطيع إرسال الصورة الآن.")
+
 async def show_weather_info(query, context):
     user_id = query.from_user.id
     user_name = get_user_name(user_id)
@@ -330,38 +315,31 @@ async def show_weather_info(query, context):
         current_date = now.strftime("%Y-%m-%d")
         current_time = now.strftime("%H:%M")
         day_name_en = now.strftime("%A")
-
         days_translation = {'Monday': 'الاثنين', 'Tuesday': 'الثلاثاء', 'Wednesday': 'الأربعاء', 'Thursday': 'الخميس', 'Friday': 'الجمعة', 'Saturday': 'السبت', 'Sunday': 'الأحد'}
         day_arabic = days_translation.get(day_name_en, day_name_en)
 
-        weather_info = await get_weather() # نفترض أن المدينة الافتراضية مناسبة
+        weather_text = f"مرحباً {user_name}! 💕\n\n📅 {current_date}\n🕐 {current_time} ({day_arabic})\n🌍 المنطقة الزمنية: {user_timezone_str}"
         
-        weather_text = f"مرحباً {user_name}! 💕\n\n📅 {current_date}\n🕐 {current_time} ({day_arabic})\n🌍 المنطقة الزمنية: {user_timezone_str}\n\n"
-        
-        if weather_info:
-            weather_text += f"🌡️ الطقس في {weather_info['city']}:\n• درجة الحرارة: {weather_info['temp']}°C\n• الوصف: {weather_info['description']}\n• الرطوبة: {weather_info['humidity']}%"
-        else:
-            weather_text += "🌡️ عذراً، لا يمكنني الحصول على معلومات الطقس حالياً."
-
     except pytz.UnknownTimeZoneError:
         weather_text = f"💔 آسفة {user_name}، المنطقة الزمنية '{user_timezone_str}' غير معروفة."
     except Exception as e:
         logger.error(f"Error in show_weather_info: {e}")
         weather_text = "💔 حدث خطأ ما، أرجو المحاولة لاحقاً."
 
-    back_keyboard = [[InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]]
-    await query.edit_message_text(weather_text, reply_markup=InlineKeyboardMarkup(back_keyboard))
-
+    await query.edit_message_text(weather_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 عودة", callback_data="back_to_main")]]))
 
 # --- تشغيل البوت ---
 def main():
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN is not set!")
+        return
+        
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # إضافة المعالجات
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # app.add_handler(MessageHandler(filters.VOICE, handle_voice)) # يمكنك تفعيلها إذا أردت
 
     print("🌸 بوت ماهيرو يعمل الآن!")
     app.run_polling()
