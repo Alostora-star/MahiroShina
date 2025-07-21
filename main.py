@@ -16,7 +16,8 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    CallbackContext
+    CallbackContext,
+    JobQueue # <-- تم إضافة الجزء المفقود
 )
 from telegram.constants import ChatAction
 
@@ -42,7 +43,6 @@ except Exception as e:
 
 # --- إعدادات البيئة والواجهات البرمجية ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # --- إعداد Flask للبقاء نشطاً ---
 flask_app = Flask(__name__)
@@ -59,8 +59,11 @@ threading.Thread(target=run_flask, daemon=True).start()
 def keep_alive_ping():
     while True:
         try:
-            requests.get(os.getenv("RENDER_EXTERNAL_URL", "http://127.0.0.1:5000"))
-            logger.info("✅ Sent keep-alive ping.")
+            # تأكد من أن هذا المتغير موجود في بيئة Render
+            render_url = os.getenv("RENDER_EXTERNAL_URL")
+            if render_url:
+                requests.get(render_url)
+                logger.info("✅ Sent keep-alive ping.")
         except Exception as e:
             logger.warning(f"⚠️ Keep-alive ping failed: {e}")
         time.sleep(240) # 4 دقائق
@@ -116,7 +119,7 @@ def initialize_user_data(user_id, name):
         'name': name,
         'timezone': 'Asia/Riyadh',
         'shopping_list': [],
-        'language_mode': 'default', # 'default' or language name
+        'language_mode': 'default',
         'conversation_history': [], 'memory_summary': ""
     }
     save_data(user_data, USER_DATA_FILE)
@@ -140,7 +143,7 @@ async def help_command(update: Update, context: CallbackContext):
     فقط اطلب ما تريد! إليك بعض الأمثلة:
     - "ابحثي عن أفضل وصفات الأرز"
     - "ذكريني بالاتصال بوالدتي غداً الساعة 5 مساءً"
-    - "أضيفي الحليب إلى قائمة التسوق"
+    - "أضيفي الحليب ومقوي عصب اليد إلى قائمة التسوق"
     - "لخصي لي هذا الرابط: [رابط]"
     - "لنتحدث بالإنجليزية"
     - "ساعديني في تصحيح هذا الكود: [الكود]"
@@ -190,11 +193,12 @@ async def handle_message(update: Update, context: CallbackContext):
     أرجع الرد فقط على شكل JSON: {{\"intent\": \"اسم_القصد\", \"data\": \"البيانات_المستخرجة\"}}.
     أمثلة:
     "ذكريني بشرب الماء بعد ساعة" -> {{\"intent\": \"reminder\", \"data\": \"شرب الماء بعد ساعة\"}}
-    "أضيفي الخبز والحليب للقائمة" -> {{\"intent\": \"add_to_shopping_list\", \"data\": \"الخبز والحليب\"}}
+    "أضيفي الخبز ومقوي عصب اليد للقائمة" -> {{\"intent\": \"add_to_shopping_list\", \"data\": [\"الخبز\", \"مقوي عصب اليد\"]}}
     "اعرضي لي قائمة التسوق" -> {{\"intent\": \"view_shopping_list\", \"data\": \"\"}}
     "لنتحدث بالإنجليزية" -> {{\"intent\": \"set_language_mode\", \"data\": \"English\"}}
     "لخصي هذا الرابط: http..." -> {{\"intent\": \"summarize_link\", \"data\": \"http...\"}}
     "ساعديني في تصحيح هذا الكود: def hello()..." -> {{\"intent\": \"debug_code\", \"data\": \"def hello()...\"}}
+    "لنبدأ تمريناً لمدة 15 دقيقة" -> {{\"intent\": \"start_workout\", \"data\": \"15\"}}
     "محادثة عادية" -> {{\"intent\": \"conversation\", \"data\": \"{text}\"}}
     """
     
@@ -255,7 +259,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         
         system_instruction = SYSTEM_INSTRUCTION_TEMPLATE.format(user_name=user_name, memory_context=memory_context)
         
-        # التحقق من وضع اللغة
         language_mode = get_user_data(user_id).get('language_mode', 'default')
         if language_mode != 'default':
             system_instruction += f"\n\nقاعدة إضافية: يجب أن تكون كل ردودك باللغة {language_mode} فقط. صحح أخطاء المستخدم بلطف."
@@ -291,7 +294,7 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
 
 # --- دوال الميزات الجديدة ---
 
-async def handle_shopping_list(update: Update, context: CallbackContext, data: str = "", view: bool = False):
+async def handle_shopping_list(update: Update, context: CallbackContext, data, view: bool = False):
     user_id = str(update.effective_user.id)
     shopping_list = get_user_data(user_id).get('shopping_list', [])
     
@@ -299,29 +302,32 @@ async def handle_shopping_list(update: Update, context: CallbackContext, data: s
         if not shopping_list:
             await update.message.reply_text("...قائمة التسوق فارغة حالياً.")
         else:
-            list_text = "هذه هي قائمة التسوق الخاصة بك:\n\n"
-            for item in shopping_list:
-                list_text += f"- {item}\n"
+            list_text = "هذه هي قائمة التسوق الخاصة بك:\n\n" + "\n".join(f"- {item}" for item in shopping_list)
             await update.message.reply_text(list_text)
         return
 
-    items = [item.strip() for item in data.split('و')]
+    items = data if isinstance(data, list) else [data]
     shopping_list.extend(items)
-    user_data[user_id]['shopping_list'] = list(set(shopping_list)) # إزالة التكرار
+    user_data[user_id]['shopping_list'] = sorted(list(set(shopping_list)))
     save_data(user_data, USER_DATA_FILE)
-    await update.message.reply_text(f"حسناً، أضفت '{data}' إلى قائمة التسوق. 🥰")
+    await update.message.reply_text(f"حسناً، أضفت '{', '.join(items)}' إلى قائمة التسوق. 🥰")
 
 async def workout_callback(context: CallbackContext):
     job = context.job
     await context.bot.send_message(chat_id=job.chat_id, text=f"🎉 لقد انتهى وقت التمرين، {job.data['user_name']}-كن! عمل رائع! أنت قوي جداً. 💪")
 
-async def handle_workout_partner(update: Update, context: CallbackContext, data: str = ""):
+async def handle_workout_partner(update: Update, context: CallbackContext, data: str):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
-    await update.message.reply_text("حسناً! لنبدأ جلسة تمرين لمدة 30 دقيقة. سأخبرك عندما ينتهي الوقت. ابذل قصارى جهدك! ❤️")
-    context.job_queue.run_once(workout_callback, 30 * 60, chat_id=user_id, name=f"workout_{user_id}", data={'user_name': user_name})
+    try:
+        duration_minutes = int(data) if data.isdigit() else 30
+    except ValueError:
+        duration_minutes = 30
+    
+    await update.message.reply_text(f"حسناً! لنبدأ جلسة تمرين لمدة {duration_minutes} دقيقة. سأخبرك عندما ينتهي الوقت. ابذل قصارى جهدك! ❤️")
+    context.job_queue.run_once(workout_callback, duration_minutes * 60, chat_id=user_id, name=f"workout_{user_id}", data={'user_name': user_name})
 
-async def handle_meditation_guide(update: Update, context: CallbackContext, data: str = ""):
+async def handle_meditation_guide(update: Update, context: CallbackContext, data: str):
     await update.message.reply_text("بالتأكيد. أوجد مكاناً هادئاً... أغمض عينيك... وركز على تنفسك. شهيق عميق... ثم زفير بطيء... دع كل الأفكار تذهب... أنت هنا الآن، في هذه اللحظة الهادئة. 🧘‍♀️")
 
 async def handle_link_summarization(update: Update, context: CallbackContext, data: str):
@@ -329,7 +335,7 @@ async def handle_link_summarization(update: Update, context: CallbackContext, da
     try:
         response = web_requests.get(data, headers={'User-Agent': 'Mozilla/5.0'})
         soup = bs4.BeautifulSoup(response.text, 'html.parser')
-        page_text = ' '.join(p.get_text() for p in soup.find_all('p'))[:4000] # أخذ أول 4000 حرف
+        page_text = ' '.join(p.get_text() for p in soup.find_all('p'))[:4000]
         await respond_to_conversation(update, context, text_input=f"لخصي لي النص التالي من مقال على الإنترنت: {page_text}")
     except Exception as e:
         logger.error(f"Link summarization error: {e}")
@@ -400,7 +406,8 @@ def main():
         logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
         return
 
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # --- الإصلاح الحاسم: تفعيل JobQueue ---
+    application = Application.builder().token(TELEGRAM_TOKEN).job_queue(JobQueue()).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -409,7 +416,7 @@ def main():
     
     application.add_error_handler(error_handler)
     
-    logger.info("🌸 Mahiro (Real World Integration Edition) is running!")
+    logger.info("🌸 Mahiro (Real World Integration, Fixed & Stable) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
