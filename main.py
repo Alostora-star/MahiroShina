@@ -6,6 +6,7 @@ import json
 import threading
 import io
 import re
+import pytz # <-- تم إضافة المكتبة الضرورية للتوقيت
 from flask import Flask
 from datetime import datetime, timedelta, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -107,6 +108,7 @@ def initialize_user_data(user_id, name):
     user_id_str = str(user_id)
     user_data[user_id_str] = {
         'name': name, 'next_action': {'state': None, 'data': None},
+        'timezone': 'Asia/Riyadh', # <-- منطقة زمنية افتراضية
         'journal': [], 'memory': {}, 'watchlist': [], 'photo_album': [],
         'mood_history': [], 'goals': [], 'reminders': [], 'shopping_list': [],
         'finances': {'transactions': [], 'budget': {}},
@@ -195,14 +197,56 @@ async def start_command(update: Update, context: CallbackContext):
         await setup_daily_routines(context, user.id)
 
 async def handle_text_message(update: Update, context: CallbackContext):
-    # ... (منطق معالجة الرسائل النصية، بما في ذلك الحالات والمحادثة العامة)
-    pass
+    user_id = str(update.effective_user.id)
+    text = update.message.text
+    state_info = get_user_data(user_id).get('next_action', {})
+    user_state = state_info.get('state') if state_info else None
+
+    if user_state == 'awaiting_name':
+        name = text.strip()
+        initialize_user_data(user_id, name)
+        await update.message.reply_text(f"حسناً، {name}-كن. ...سأناديك هكذا من الآن.", reply_markup=get_main_keyboard())
+        return
+
+    action_map = {
+        'awaiting_search_query': perform_search,
+        'awaiting_write_prompt': perform_write,
+        'awaiting_email_prompt': lambda u, c, t: perform_write(u, c, prompt=f"اكتبي مسودة بريد إلكتروني احترافي بخصوص: {t}"),
+        'awaiting_file_instruction': handle_file_instruction,
+        'awaiting_reminder': handle_smart_reminder,
+        'awaiting_debug_code': lambda u,c,t: handle_code_interaction(u,c,code=t, mode='debug'),
+        'awaiting_summarize_link': handle_link_summarization,
+        'awaiting_expense': handle_financial_entry,
+        'awaiting_dream': handle_dream_entry,
+        'awaiting_story_prompt': handle_radio_prompt,
+        'awaiting_joke': handle_joke_entry,
+        'awaiting_decision_prompt': perform_decision_making,
+        'awaiting_vibe_prompt': direct_vibe,
+        'awaiting_gift_prompt': find_gift,
+        'in_game_20q': handle_20q_game,
+        'in_story_mode': handle_story_mode,
+    }
+    if user_state in action_map:
+        await action_map[user_state](update, context, text)
+        return
+
+    await respond_to_conversation(update, context, text_input=text)
 
 async def handle_forwarded_message(update: Update, context: CallbackContext):
     # ... (منطق "العقل الثاني")
     pass
     
-# ... (بقية معالجات الرسائل: صوت، صورة، ملف)
+async def handle_voice_message(update: Update, context: CallbackContext):
+    # ... (منطق الرسائل الصوتية)
+    pass
+
+async def handle_photo_message(update: Update, context: CallbackContext):
+    # ... (منطق ألبوم الصور)
+    pass
+
+async def handle_document_message(update: Update, context: CallbackContext):
+    # ... (منطق الملفات)
+    pass
 
 async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     # ... (منطق المحادثة الأساسي مع Gemini)
@@ -231,6 +275,49 @@ async def handle_group_command(update: Update, context: CallbackContext, command
     pass
     
 # ... (بقية دوال الميزات)
+async def perform_search(update: Update, context: CallbackContext, query: str):
+    set_user_state(update.effective_user.id, None)
+    await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{query}' وقدمي لي ملخصاً بأسلوبك.")
+
+async def perform_write(update: Update, context: CallbackContext, prompt: str):
+    set_user_state(update.effective_user.id, None)
+    await respond_to_conversation(update, context, text_input=f"اكتبي لي نصاً إبداعياً عن '{prompt}' بأسلوبك.")
+
+async def handle_file_instruction(update: Update, context: CallbackContext, instruction: str):
+    # ... (منطق تعديل الملفات)
+    pass
+
+async def handle_code_interaction(update: Update, context: CallbackContext, code: str, mode: str):
+    # ... (منطق مصحح الأكواد)
+    pass
+
+async def handle_link_summarization(update: Update, context: CallbackContext, text: str):
+    # ... (منطق تلخيص الروابط)
+    pass
+    
+async def perform_decision_making(update: Update, context: CallbackContext, prompt: str):
+    # ... (منطق مساعد اتخاذ القرار)
+    pass
+
+async def direct_vibe(update: Update, context: CallbackContext, vibe: str):
+    # ... (منطق مخرج الأجواء)
+    pass
+
+async def find_gift(update: Update, context: CallbackContext, description: str):
+    # ... (منطق خبير الهدايا)
+    pass
+
+async def handle_joke_entry(update: Update, context: CallbackContext, text: str):
+    # ... (منطق النكت الداخلية)
+    pass
+
+async def handle_20q_game(update: Update, context: CallbackContext, text: str):
+    # ... (منطق لعبة 20 سؤالاً)
+    pass
+
+async def handle_story_mode(update: Update, context: CallbackContext, text: str):
+    # ... (منطق القصة التفاعلية)
+    pass
 
 # --- دوال الروتين اليومي ---
 async def morning_routine_callback(context: CallbackContext):
@@ -241,6 +328,37 @@ async def setup_daily_routines(context: CallbackContext, user_id: int):
     # ... (منطق إعداد الروتين)
     pass
 
+# --- نظام التذكيرات (تم بناؤه بالكامل) ---
+async def reminder_callback(context: CallbackContext):
+    job = context.job
+    await context.bot.send_message(chat_id=job.chat_id, text=f"⏰ ...تذكير، {job.data['user_name']}-كن. لقد طلبت مني أن أذكرك بـ: '{job.data['task']}'")
+
+async def handle_smart_reminder(update: Update, context: CallbackContext, text: str):
+    user_id = str(update.effective_user.id)
+    user_name = get_user_data(user_id).get('name', 'أماني-كن')
+    set_user_state(user_id, None)
+    await update.message.reply_text("حسناً... سأحاول أن أفهم هذا التذكير.")
+    
+    try:
+        prompt = f"صديقي طلب مني تذكيره بهذا: '{text}'. حللي النص بدقة واستخرجي 'ماذا يجب أن أذكره به' و'متى' بالثواني من الآن (نسبة إلى الوقت الحالي). أرجعي الرد فقط على شكل JSON صالح للاستخدام البرمجي: {{\"task\": \"النص\", \"delay_seconds\": عدد_الثواني}}. إذا لم تستطيعي تحديد الوقت، اجعلي delay_seconds صفراً."
+        response = await model.generate_content_async(prompt)
+        
+        json_text = response.text.strip().replace("```json", "").replace("```", "")
+        reminder_data = json.loads(json_text)
+        
+        task = reminder_data.get("task")
+        delay = reminder_data.get("delay_seconds")
+
+        if task and isinstance(delay, int) and delay > 0:
+            context.job_queue.run_once(reminder_callback, delay, chat_id=user_id, name=f"reminder_{user_id}_{task}", data={'task': task, 'user_name': user_name})
+            await update.message.reply_text(f"حسناً، سأذكرك بـ '{task}' بعد {timedelta(seconds=delay)}.")
+        else:
+            await update.message.reply_text("...آسفة، لم أفهم الوقت المحدد في طلبك.")
+
+    except Exception as e:
+        logger.error(f"Smart reminder parsing error: {e}")
+        await update.message.reply_text("...آسفة، واجهتني مشكلة في فهم هذا التذكير.")
+
 # --- معالج الأزرار (تم بناؤه بالكامل) ---
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -249,7 +367,7 @@ async def button_handler(update: Update, context: CallbackContext):
     data = query.data
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
 
-    # التنقل بين القوائم الرئيسية
+    # التنقل
     menu_map = {
         "back_to_main": ("...هل تحتاج شيئاً آخر؟", get_main_keyboard()),
         "our_world_menu": ("هذا هو عالمنا الخاص...", get_our_world_keyboard()),
@@ -304,6 +422,7 @@ async def button_handler(update: Update, context: CallbackContext):
         await respond_to_conversation(update, context, text_input="اقترحي علي خطة وجبات صحية ولذيذة ليوم غد.")
     # ... (إضافة بقية الأزرار)
 
+
 # --- نظام الأمان: معالج الأخطاء ---
 async def error_handler(update: object, context: CallbackContext) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
@@ -328,14 +447,8 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
-    # ... (بقية المعالجات)
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
     
-    # --- السطر الذي تم إصلاحه ---
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_error_handler(error_handler)
-    
-    logger.info("🌸 Mahiro (Definitive, Complete & Fixed Edition) is running!")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+    application.add_handler(CallbackQueryHandler(but
