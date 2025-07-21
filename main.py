@@ -31,7 +31,7 @@ try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         # استخدام نموذج Flash لضمان السرعة مع الحفاظ على الذكاء
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-pro')
     else:
         model = None
 except ImportError:
