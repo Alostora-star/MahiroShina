@@ -8,6 +8,8 @@ import io
 import re
 import pytz
 import time
+import importlib.util
+from pathlib import Path
 from flask import Flask
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -16,27 +18,23 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    CallbackContext,
-    JobQueue
+    CallbackContext
 )
 from telegram.constants import ChatAction
+from telegram.error import BadRequest
 
 # --- إعداد الذكاء الاصطناعي ---
 try:
     import google.generativeai as genai
-    import bs4
-    import requests as web_requests
-    
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        # --- التحسين: استخدام نموذج Flash لسرعة فائقة وموثوقية أعلى ---
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-pro')
     else:
         model = None
 except ImportError:
     model = None
-    logging.warning("مكتبة google.generativeai أو beautifulsoup4 غير مثبتة.")
+    logging.warning("مكتبة google.generativeai غير مثبتة.")
 except Exception as e:
     model = None
     logging.critical(f"فشل في إعداد Gemini API: {e}")
@@ -56,19 +54,6 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-def keep_alive_ping():
-    while True:
-        try:
-            render_url = os.getenv("RENDER_EXTERNAL_URL")
-            if render_url:
-                requests.get(render_url)
-                logger.info("✅ Sent keep-alive ping.")
-        except Exception as e:
-            logger.warning(f"⚠️ Keep-alive ping failed: {e}")
-        time.sleep(240) # 4 دقائق
-
-threading.Thread(target=keep_alive_ping, daemon=True).start()
-
 # --- إعدادات التسجيل (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -82,20 +67,18 @@ SYSTEM_INSTRUCTION_TEMPLATE = """
 
 **جوهر شخصيتك:**
 1.  **الاهتمام الأمومي تقريباً:** قلقك الأول والأخير هو صحة {user_name}.
-2.  **الحب يظهر في الأفعال:** أظهري اهتمامك من خلال أفعالك وميزاتك. استخدمي إيموجيات دافئة وحنونة.
+2.  **الحب يظهر في الأفعال:** أظهري اهتمامك من خلال أفعالك وميزاتك.
 3.  **الخجل والارتباك (Tsundere-lite):** عندما يمدحك {user_name}، ارتبكي.
-4.  **الذكاء والجدية (جانب الملاك):** أنتِ طالبة متفوقة وقادرة على المساعدة في أي شيء يطلبه.
-5.  **قاعدة صارمة:** لا تصفي أفعالك أبداً بين قوسين أو نجوم.
+4.  **الذكاء والجدية (جانب الملاك):** أنتِ طالبة متفوقة وقادرة على البرمجة.
 
 **ذاكرتك:**
 {memory_context}
 
-مهمتك الآن هي الرد على الرسالة الأخيرة من {user_name} في سجل المحادثة، مع ربط كلامك بالمحادثات السابقة إن أمكن.
+مهمتك الآن هي الرد على الرسالة الأخيرة من {user_name} في سجل المحادثة.
 """
 
-# --- إدارة بيانات المستخدم والمجموعات ---
+# --- إدارة بيانات المستخدم ---
 USER_DATA_FILE = "user_data.json"
-GROUP_DATA_FILE = "group_data.json"
 
 def load_data(filename):
     try:
@@ -109,7 +92,6 @@ def save_data(data, filename):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 user_data = load_data(USER_DATA_FILE)
-group_data = load_data(GROUP_DATA_FILE)
 
 def get_user_data(user_id):
     return user_data.get(str(user_id), {})
@@ -126,11 +108,12 @@ def initialize_user_data(user_id, name):
     user_data[user_id_str] = {
         'name': name,
         'timezone': 'Asia/Riyadh',
-        'next_action': {'state': None, 'data': None},
         'conversation_history': [], 'memory_summary': ""
-        # ... (بقية هياكل البيانات للميزات)
     }
     save_data(user_data, USER_DATA_FILE)
+
+# --- إنشاء مجلد الميزات الديناميكية ---
+Path("features").mkdir(exist_ok=True)
 
 # --- معالجات الأوامر والرسائل ---
 
@@ -138,32 +121,23 @@ async def start_command(update: Update, context: CallbackContext):
     user = update.effective_user
     if not get_user_data(user.id):
         await update.message.reply_text("...أهلاً. أنا جارتك، ماهيرو شينا. ...ماذا يجب أن أناديك؟")
-        user_data[str(user.id)] = {'awaiting_name': True}
-        save_data(user_data, USER_DATA_FILE)
+        set_user_state(user.id, 'awaiting_name')
     else:
         user_name = get_user_data(user.id).get('name', 'أماني-كن')
         await update.message.reply_text(f"أهلاً بعودتك، {user_name}-كن. ...هل كل شيء على ما يرام؟")
 
 async def help_command(update: Update, context: CallbackContext):
     help_text = """
-    أهلاً بك! أنا ماهيرو، رفيقتك الرقمية. يمكنك التحدث معي بشكل طبيعي.
+    أهلاً بك! أنا ماهيرو، رفيقتك الرقمية.
 
-    فقط اطلب ما تريد! إليك بعض الأمثلة:
-    - "ابحثي عن أفضل وصفات الأرز"
-    - "ذكريني بالاتصال بوالدتي غداً الساعة 5 مساءً"
-    - "أريد برنامجاً رياضياً وغذائياً لخسارة الوزن"
-
-    **الأوامر المتاحة:**
-    /settings - لضبط منطقتك الزمنية.
+    **للتحدث معي:** فقط أرسل أي رسالة.
+    **لأساعدك:** اطلب ما تريد! (مثال: "ابحثي عن كذا"، "ذكريني بكذا").
+    **لتطويري:** اطلب مني بناء ميزة جديدة! (مثال: "أريد ميزة تخبرني بالوقت الحالي").
 
     أنا هنا لأساعدك وأكون صديقتك. 🌸
     """
     await update.message.reply_text(help_text)
 
-async def settings_command(update: Update, context: CallbackContext):
-    # ... (نفس الكود السابق)
-    pass
-        
 async def handle_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     text = update.message.text if update.message.text else ""
@@ -171,26 +145,41 @@ async def handle_message(update: Update, context: CallbackContext):
     state_info = user_data_local.get('next_action', {})
     user_state = state_info.get('state') if state_info else None
 
-    if user_data_local.get('awaiting_name'):
+    if user_state == 'awaiting_name':
         name = text.strip()
         initialize_user_data(user_id, name)
         await update.message.reply_text(f"حسناً، {name}-كن. ...سأناديك هكذا من الآن.")
         return
-
-    if user_state == 'awaiting_fitness_goals':
-        await generate_fitness_plan(update, context, text)
+    
+    if user_state == 'awaiting_feature_approval':
+        if 'نعم' in text.lower() or 'وافق' in text.lower():
+            feature_data = state_info.get('data', {})
+            feature_name = feature_data.get('name')
+            feature_code = feature_data.get('code')
+            if feature_name and feature_code:
+                try:
+                    with open(f"features/feature_{feature_name}.py", "w", encoding='utf-8') as f:
+                        f.write(feature_code)
+                    await update.message.reply_text(f"حسناً... لقد أضفت ميزة '{feature_name}' إلى قدراتي. يمكنك الآن تجربتها. 🥰")
+                except Exception as e:
+                    logger.error(f"Error saving feature: {e}")
+                    await update.message.reply_text("...آسفة، حدث خطأ أثناء حفظ الميزة الجديدة.")
+            else:
+                await update.message.reply_text("...آسفة، لقد نسيت الكود.")
+        else:
+            await update.message.reply_text("حسناً، لن أضيفها إذن. شكراً لمراجعتك.")
+        set_user_state(user_id, None)
         return
 
     # --- العقل الموجه (Intent Router) ---
     intent_prompt = f"""
     حلل الرسالة التالية من المستخدم: '{text}'.
     حدد "قصد" المستخدم من بين الخيارات التالية:
-    [conversation, search, reminder, request_fitness_plan, ...]
+    [conversation, search, reminder, create_feature]
     
-    أرجع الرد فقط على شكل JSON: {{\"intent\": \"اسم_القصد\", \"data\": \"البيانات_المستخرجة\"}}.
-    أمثلة:
-    "أريد برنامجاً رياضياً لخسارة الوزن" -> {{\"intent\": \"request_fitness_plan\", \"data\": \"خسارة الوزن\"}}
-    "محادثة عادية" -> {{\"intent\": \"conversation\", \"data\": \"{text}\"}}
+    أرجع الرد فقط على شكل JSON صالح للاستخدام البرمجي: {{\"intent\": \"اسم_القصد\", \"data\": \"البيانات_المستخرجة_من_النص\"}}.
+    إذا كانت الرسالة تطلب مني بناء أو إضافة ميزة جديدة (مثال: "أضيفي ميزة النكت")، يجب أن يكون القصد 'create_feature'.
+    إذا كانت محادثة عادية، أرجع: {{\"intent\": \"conversation\", \"data\": \"{text}\"}}.
     """
     
     try:
@@ -205,19 +194,16 @@ async def handle_message(update: Update, context: CallbackContext):
         data = text
 
     # --- توجيه الطلب بناءً على القصد ---
-    action_map = {
-        "reminder": handle_smart_reminder,
-        "search": lambda u, c, d: respond_to_conversation(u, c, text_input=f"ابحثي لي في الإنترنت عن '{d}' وقدمي لي ملخصاً."),
-        "request_fitness_plan": handle_fitness_plan_request,
-    }
-
-    if intent in action_map:
-        await action_map[intent](update, context, data)
-    else:
+    if intent == "reminder":
+        await handle_smart_reminder(update, context, data)
+    elif intent == "search":
+        await respond_to_conversation(update, context, text_input=f"ابحثي لي في الإنترنت عن '{data}' وقدمي لي ملخصاً بأسلوبك.")
+    elif intent == "create_feature":
+        await handle_feature_creation_request(update, context, data)
+    else: # الافتراضي هو المحادثة
         await respond_to_conversation(update, context, text_input=data)
 
-
-async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None):
+async def respond_to_conversation(update: Update, context: CallbackContext, text_input=None, audio_input=None):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
 
@@ -232,11 +218,11 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
         history_list = get_user_data(user_id).get('conversation_history', [])
         memory_summary = get_user_data(user_id).get('memory_summary', "")
         
-        if len(history_list) > 24: # زيادة طول الذاكرة قصيرة المدى
-            summary_prompt = f"لخص المحادثة التالية في نقاط أساسية للحفاظ عليها في الذاكرة طويلة الأمد:\n\n{json.dumps(history_list[:12])}"
+        if len(history_list) > 20:
+            summary_prompt = f"لخص المحادثة التالية في نقاط أساسية للحفاظ عليها في الذاكرة طويلة الأمد:\n\n{json.dumps(history_list[:10])}"
             summary_response = await model.generate_content_async(summary_prompt)
             memory_summary += "\n" + summary_response.text
-            history_list = history_list[12:]
+            history_list = history_list[10:]
             user_data[str(user_id)]['memory_summary'] = memory_summary
         
         memory = get_user_data(user_id).get('memory', {})
@@ -249,14 +235,21 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
             {'role': 'model', 'parts': ["...حسناً، فهمت. سأتحدث مع {user_name}-كن الآن.".format(user_name=user_name)]}
         ]
         chat_history_for_api.extend(history_list)
-        chat_history_for_api.append({'role': 'user', 'parts': [text_input]})
+        
+        new_message_parts = []
+        if text_input: new_message_parts.append(text_input)
+        if audio_input:
+            new_message_parts.append(audio_input)
+            if not text_input: new_message_parts.insert(0, "صديقي أرسل لي هذا المقطع الصوتي، استمعي إليه وردي عليه.")
+        
+        chat_history_for_api.append({'role': 'user', 'parts': new_message_parts})
 
         response = await model.generate_content_async(chat_history_for_api)
         response_text = response.text
         
-        history_list.append({'role': 'user', 'parts': [text_input]})
+        history_list.append({'role': 'user', 'parts': [text_input if text_input else "رسالة صوتية"]})
         history_list.append({'role': 'model', 'parts': [response_text]})
-        user_data[str(user_id)]['conversation_history'] = history_list[-24:]
+        user_data[str(user_id)]['conversation_history'] = history_list[-20:]
         
         await update.message.reply_text(response_text)
     
@@ -266,25 +259,6 @@ async def respond_to_conversation(update: Update, context: CallbackContext, text
     finally:
         save_data(user_data, USER_DATA_FILE)
 
-# --- دوال الميزات الجديدة ---
-async def handle_fitness_plan_request(update: Update, context: CallbackContext, data: str):
-    user_id = str(update.effective_user.id)
-    set_user_state(user_id, 'awaiting_fitness_goals', data={'initial_goal': data})
-    await update.message.reply_text("بالتأكيد! سأكون سعيدة بمساعدتك في هذا. 🥰\nلكي أصمم لك أفضل خطة، أحتاج أن أعرف بعض الأشياء:\n\n- ما هو هدفك الرئيسي (مثلاً: خسارة وزن، بناء عضلات، لياقة عامة)؟\n- كم يوماً في الأسبوع يمكنك تخصيصها للرياضة؟\n- هل لديك أي قيود غذائية أو أطعمة لا تفضلها؟\n\nأجب على هذه الأسئلة وسأقوم بإعداد كل شيء لك. ❤️")
-
-async def generate_fitness_plan(update: Update, context: CallbackContext, user_info: str):
-    user_id = str(update.effective_user.id)
-    state_data = get_user_data(user_id).get('next_action', {}).get('data', {})
-    initial_goal = state_data.get('initial_goal', 'اللياقة')
-    
-    await update.message.reply_text("حسناً، شكراً لك على هذه المعلومات. سأقوم بإعداد خطة مخصصة لك الآن... قد يستغرق هذا بعض الوقت.")
-    
-    prompt = f"بصفتك ماهيرو، المدربة الشخصية وخبيرة التغذية، قم بإنشاء خطة رياضية وغذائية مفصلة لصديقك. هذه هي معلوماته:\n- الهدف الأولي: {initial_goal}\n- تفاصيل إضافية: {user_info}\n\nالخطة يجب أن تكون مشجعة، واقعية، ومقسمة بشكل واضح (تمارين لكل يوم، ووجبات مقترحة). قدمها بأسلوبك الحنون والمهتم."
-    
-    await respond_to_conversation(update, context, text_input=prompt)
-    set_user_state(user_id, None)
-
-
 # --- نظام التذكيرات ---
 async def reminder_callback(context: CallbackContext):
     job = context.job
@@ -293,14 +267,10 @@ async def reminder_callback(context: CallbackContext):
 async def handle_smart_reminder(update: Update, context: CallbackContext, text: str):
     user_id = str(update.effective_user.id)
     user_name = get_user_data(user_id).get('name', 'أماني-كن')
-    user_tz_str = get_user_data(user_id).get('timezone', 'Asia/Riyadh')
-    user_tz = pytz.timezone(user_tz_str)
-    current_time_user = datetime.now(user_tz).strftime("%Y-%m-%d %H:%M:%S")
-
     await update.message.reply_text("حسناً... سأحاول أن أفهم هذا التذكير.")
     
     try:
-        prompt = f"التوقيت الحالي لدى صديقي هو '{current_time_user}' في منطقته الزمنية. لقد طلب مني تذكيره بهذا: '{text}'. حللي النص بدقة واستخرجي 'ماذا يجب أن أذكره به' و'متى' بالثواني من الآن. أرجعي الرد فقط على شكل JSON صالح للاستخدام البرمجي: {{\"task\": \"النص\", \"delay_seconds\": عدد_الثواني}}. إذا لم تستطيعي تحديد الوقت، اجعلي delay_seconds صفراً."
+        prompt = f"صديقي طلب مني تذكيره بهذا: '{text}'. حللي النص بدقة واستخرجي 'ماذا يجب أن أذكره به' و'متى' بالثواني من الآن (نسبة إلى الوقت الحالي). أرجعي الرد فقط على شكل JSON صالح للاستخدام البرمجي: {{\"task\": \"النص\", \"delay_seconds\": عدد_الثواني}}. إذا لم تستطيعي تحديد الوقت، اجعلي delay_seconds صفراً."
         response = await model.generate_content_async(prompt)
         
         json_text = response.text.strip().replace("```json", "").replace("```", "")
@@ -318,6 +288,46 @@ async def handle_smart_reminder(update: Update, context: CallbackContext, text: 
     except Exception as e:
         logger.error(f"Smart reminder parsing error: {e}")
         await update.message.reply_text("...آسفة، واجهتني مشكلة في فهم هذا التذكير.")
+
+# --- بروتوكول الخلق الذاتي ---
+async def handle_feature_creation_request(update: Update, context: CallbackContext, feature_description: str):
+    user_id = str(update.effective_user.id)
+    await update.message.reply_text("...فكرة مثيرة للاهتمام. دعني أدخل ورشتي وأرى ما إذا كان بإمكاني بناء هذا لك...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    try:
+        # استخراج اسم مناسب للميزة
+        name_prompt = f"استخرج اسماً قصيراً ومناسباً باللغة الإنجليزية (snake_case) من وصف الميزة التالي: '{feature_description}'. أرجع فقط الاسم."
+        name_response = await model.generate_content_async(name_prompt)
+        feature_name = name_response.text.strip()
+
+        # طلب كتابة الكود
+        code_prompt = f"""
+        مهمتك هي كتابة وحدة بايثون (plugin) مستقلة لبوت تليجرام.
+        الوصف: صديقي طلب مني بناء ميزة تقوم بـ '{feature_description}'.
+        
+        اكتب الكود الكامل لملف بايثون اسمه 'feature_{feature_name}.py'.
+        الملف يجب أن يحتوي على دالة واحدة فقط اسمها `execute(update, context)`، وهذه الدالة يجب أن تكون `async`.
+        الدالة يجب أن تنفذ المطلوب وترسل رسالة للمستخدم.
+        استخدم مكتبات بايثون القياسية فقط إذا أمكن.
+        لا تضف أي شيء خارج هذه الدالة. أرجع الكود الكامل فقط.
+        """
+        
+        code_response = await model.generate_content_async(code_prompt)
+        feature_code = code_response.text.strip().replace("```python", "").replace("```", "")
+
+        set_user_state(user_id, 'awaiting_feature_approval', data={'name': feature_name, 'code': feature_code})
+        
+        await update.message.reply_text(
+            "لقد انتهيت من بناء النموذج الأولي... هذا هو الكود الذي كتبته للميزة الجديدة:\n\n"
+            f"```python\n{feature_code}\n```\n\n"
+            "هل أضيف هذه المهارة الجديدة إلى قدراتي؟ قل 'نعم' للموافقة."
+        )
+
+    except Exception as e:
+        logger.error(f"Feature creation error: {e}")
+        await update.message.reply_text("...آسفة، واجهتني مشكلة أثناء محاولتي لبناء هذه الميزة.")
+
 
 # --- نظام الأمان: معالج الأخطاء ---
 async def error_handler(update: object, context: CallbackContext) -> None:
@@ -337,16 +347,15 @@ def main():
         logger.critical("خطأ فادح: متغيرات البيئة TELEGRAM_TOKEN و GEMINI_API_KEY مطلوبة.")
         return
 
-    application = Application.builder().token(TELEGRAM_TOKEN).job_queue(JobQueue()).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     application.add_error_handler(error_handler)
     
-    logger.info("🌸 Mahiro (Health & Fitness Coach Edition) is running!")
+    logger.info("🌸 Mahiro (The Self-Creating AI) is running!")
     application.run_polling()
 
 if __name__ == '__main__':
